@@ -1,0 +1,678 @@
+//! The security layer: entrypoints, taint reachability, and dependency reach.
+//!
+//! All three are the same primitive — reachability over a relation-masked call
+//! graph — asked in different directions:
+//!
+//! | question | direction | from | to |
+//! |---|---|---|---|
+//! | is this function reachable at all? | forward | entrypoints | the function |
+//! | does untrusted input reach a dangerous call? | forward | sources | sinks |
+//! | does our code reach a vulnerable dependency? | forward | our symbols | the package |
+//!
+//! What makes them answerable rather than merely expressible is the GRAIL
+//! filter: on a real corpus it rejects 98–99.7% of unreachable pairs without
+//! searching, so a query over millions of pairs only pays for the few that
+//! might connect.
+//!
+//! # What this is and is not
+//!
+//! This is **reachability over a call graph**, not dataflow. It answers "is
+//! there a call path from a source to a sink", which is a necessary condition
+//! for a taint vulnerability and not a sufficient one: it cannot see whether
+//! the tainted value is actually passed along that path, nor whether a
+//! sanitiser on the way neutralises it. Treat a finding as a lead to
+//! investigate, not a proven vulnerability. Findings carry a
+//! [`Finding::confidence`] that says which.
+//!
+//! The reverse direction is the stronger guarantee: when reachability says
+//! *unreachable*, and the call graph is complete for that language, the sink
+//! genuinely cannot be called from that source. That is what makes it useful
+//! for triage — ruling vulnerabilities *out* is where the leverage is.
+
+pub mod spec;
+
+use codegraph_core::{LocalId, Relation, RelationMask};
+use codegraph_index::IndexQuery;
+use codegraph_query::{Engine, SymbolInfo};
+use codegraph_store::Result;
+
+pub use spec::{Matcher, Mode, TaintSpec};
+
+/// How much a finding is worth acting on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Confidence {
+    /// Every edge on the path is `EXTRACTED` — a direct call the extractor saw.
+    Direct,
+    /// At least one edge is `INFERRED`. The path is plausible but rests on a
+    /// resolution guess.
+    Inferred,
+}
+
+/// A source that reaches a sink.
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub source: SymbolInfo,
+    pub sink: SymbolInfo,
+    /// The call path, source first, sink last.
+    pub path: Vec<SymbolInfo>,
+    pub confidence: Confidence,
+    /// Whether the source is itself reachable from an entrypoint. An
+    /// unreachable source is usually dead code or a test fixture, and ranking
+    /// it alongside live findings is how a report becomes noise.
+    pub reachable_from_entrypoint: bool,
+}
+
+impl Finding {
+    /// Hops from source to sink.
+    pub fn depth(&self) -> usize {
+        self.path.len().saturating_sub(1)
+    }
+}
+
+/// Names that conventionally mark a program entrypoint.
+///
+/// Deliberately a short, conservative list. An over-broad entrypoint set makes
+/// everything look reachable, which destroys the one thing reachability is good
+/// for — ruling things out.
+pub const ENTRYPOINT_NAMES: &[&str] = &[
+    "main", "handler", "handle", "run", "serve", "start", "lambda_handler",
+    "application", "app", "wsgi", "asgi", "execute", "dispatch", "process_request",
+];
+
+/// The relations a taint path may follow: **calls only**.
+///
+/// This is narrower than [`Relation::TAINT`], deliberately. That mask includes
+/// `imports` and `depends_on`, which are *file-level* relations — and following
+/// them produces "findings" like `request.py -> subprocess` where the path is a
+/// chain of file imports, not a flow of data. Structurally real, analytically
+/// meaningless, and exactly the kind of result that makes a security tool
+/// untrustworthy.
+///
+/// Still a subset of [`crate::REACHABILITY`], so the reachability index covers
+/// it and the fast rejection still applies.
+pub const FLOW: RelationMask = RelationMask::of(&[
+    Relation::Calls,
+    Relation::IndirectCall,
+    // A re-export forwards a call to its real definition, so a path through one
+    // is a genuine call path.
+    Relation::ReExports,
+]);
+
+/// The relations a *dependency* path may follow. Used for SCA, where file-level
+/// imports are exactly what the question is about.
+pub const DEPENDENCY_FLOW: RelationMask = RelationMask::of(&[
+    Relation::Imports,
+    Relation::ImportsFrom,
+    Relation::DependsOn,
+    Relation::Requires,
+]);
+
+/// The relations a *value* may travel along: `flows_to` only. Not covered
+/// by the reachability labels ([`REACHABILITY`] is the call graph), so a
+/// dataflow question is answered by search alone — one backward search per
+/// sink, which is cheap because sinks are few.
+pub const DATA_FLOW: RelationMask = Relation::DATA_FLOW;
+
+/// The mask the reachability index is built over.
+pub const REACHABILITY: RelationMask = codegraph_index::REACHABILITY_RELATIONS;
+
+/// Can a symbol of this kind be a taint source or sink?
+///
+/// Files and packages cannot: they do not execute, so a "path" that begins or
+/// ends at one is an import chain rather than a call chain.
+/// The `<leave>` half of a stub edge's call-site tag.
+fn leave_site(context: Option<&str>) -> Option<String> {
+    let (l, _) = context?.split_once('>')?;
+    (!l.is_empty()).then(|| l.to_string())
+}
+
+/// The `<enter>` half of a stub edge's call-site tag.
+fn enter_site(context: Option<&str>) -> Option<String> {
+    let (_, r) = context?.split_once('>')?;
+    (!r.is_empty()).then(|| r.to_string())
+}
+
+/// A stub's incoming flow edges, grouped by the call site they enter on.
+/// A stub like `Sprintf` has one edge per call in the corpus; grouping once
+/// makes each visit cost the edges of one call, not of every call.
+#[derive(Default)]
+struct StubEdges {
+    by_stub: std::collections::HashMap<u32, Arrivals>,
+}
+
+/// Enter site -> `(source, leave site of that source)`.
+type Arrivals = std::collections::HashMap<Option<String>, Vec<(u32, Option<String>)>>;
+
+impl StubEdges {
+    /// `(source, leave site of that source)` for every edge into `stub`
+    /// that enters on `site`.
+    fn arrivals(
+        &mut self,
+        view: codegraph_store::View<'_>,
+        stub: LocalId,
+        site: Option<&str>,
+    ) -> Result<Vec<(u32, Option<String>)>> {
+        let groups = match self.by_stub.entry(stub.get()) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                let mut groups = Arrivals::new();
+                for e in view.in_edges(stub, DATA_FLOW)? {
+                    groups.entry(enter_site(e.context)).or_default().push((e.node.get(), leave_site(e.context)));
+                }
+                v.insert(groups)
+            }
+        };
+        Ok(groups.get(&site.map(str::to_string)).cloned().unwrap_or_default())
+    }
+}
+
+fn can_carry_taint(kind: codegraph_core::SymbolKind) -> bool {
+    !matches!(
+        kind,
+        codegraph_core::SymbolKind::File
+            | codegraph_core::SymbolKind::Package
+            | codegraph_core::SymbolKind::Block
+            // A local is on no `flows_to` edge: the facts run from its
+            // function's inputs to its sinks and were resolved through it.
+            | codegraph_core::SymbolKind::Local
+    )
+}
+
+pub struct Security<'a, I: IndexQuery = codegraph_index::IndexData> {
+    engine: &'a Engine<I>,
+}
+
+impl<'a, I: IndexQuery> Security<'a, I> {
+    pub fn new(engine: &'a Engine<I>) -> Self {
+        Self { engine }
+    }
+
+    /// Symbols that look like entrypoints.
+    ///
+    /// Matches callable symbols whose name is in [`ENTRYPOINT_NAMES`], plus
+    /// anything already flagged by the extractor. Returns them sorted, so a
+    /// report is stable between runs.
+    pub fn entrypoints(&self) -> Result<Vec<LocalId>> {
+        let view = self.engine.store().view();
+        let mut out = Vec::new();
+        // Per segment so the columns are fetched once, not once per row.
+        for si in 0..view.segment_count() {
+            let (seg, base) = view.segment(si);
+            let flags = seg.node_flags()?;
+            let kinds = seg.node_kinds()?;
+            let norms = seg.node_norm_names()?;
+            for l in 0..seg.node_count() {
+                let id = LocalId::new(base + l as u32);
+                if !view.is_canonical(id) {
+                    continue;
+                }
+                if flags[l] & codegraph_store::node_flags::ENTRYPOINT != 0 {
+                    out.push(id);
+                    continue;
+                }
+                let kind = codegraph_core::SymbolKind::from_u8(kinds[l]);
+                let callable = matches!(
+                    kind,
+                    codegraph_core::SymbolKind::Function | codegraph_core::SymbolKind::Method
+                );
+                if callable && ENTRYPOINT_NAMES.contains(&seg.string(norms[l])) {
+                    out.push(id);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Everything reachable from the entrypoints along [`FLOW`].
+    ///
+    /// The complement is the interesting half: a symbol *not* in this set
+    /// cannot be invoked through any call path the index knows about.
+    pub fn reachable_from_entrypoints(&self) -> Result<Vec<LocalId>> {
+        let eps = self.entrypoints()?;
+        if eps.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.engine.reachable_set(&eps, FLOW)
+    }
+
+    /// Resolve a matcher against the corpus.
+    pub fn resolve(&self, m: &Matcher) -> Result<Vec<LocalId>> {
+        m.resolve(self.engine)
+    }
+
+    /// Run a taint spec.
+    ///
+    /// One finding per (source, sink) pair that connects, capped by
+    /// `max_findings`. Sources and sinks are resolved first so a spec that
+    /// matches nothing is visible as an empty result rather than a silent pass.
+    pub fn analyse(&self, spec: &TaintSpec, max_findings: usize) -> Result<Analysis> {
+        // Sources and sinks are narrowed to symbols that can actually execute.
+        // A matcher like `contains("request")` otherwise picks up every file
+        // named `request.py`, and every finding rooted at one is an import
+        // chain dressed up as a call path.
+        let dataflow = spec.mode == Mode::DataFlow;
+        let mask = if dataflow { DATA_FLOW } else { FLOW };
+        let excluded: std::collections::HashSet<u32> =
+            self.resolve_all(&spec.excludes, dataflow)?.iter().map(|l| l.get()).collect();
+        let keep = |ids: Vec<LocalId>| -> Vec<LocalId> {
+            ids.into_iter().filter(|l| !excluded.contains(&l.get())).collect()
+        };
+        let mut sources = keep(self.executable(self.resolve_all(&spec.sources, dataflow)?)?);
+        let mut sinks = keep(self.executable(self.resolve_all(&spec.sinks, dataflow)?)?);
+        if dataflow {
+            // A value question starts at what a source *produces* — its
+            // return value (the function symbol) and its inputs — and ends
+            // at what a sink *consumes*: its parameters, or the external
+            // stub itself.
+            sources = self.with_parameters(sources)?;
+            sinks = self.with_parameters(sinks)?;
+        }
+        let sanitizers = self.resolve_all(&spec.sanitizers, dataflow)?;
+
+        let live = self.reachable_from_entrypoints()?;
+        let live_set: std::collections::HashSet<u32> = live.iter().map(|l| l.get()).collect();
+
+        let mut findings = Vec::new();
+        let mut rejected_by_index = 0usize;
+        let mut searched = 0usize;
+
+        if dataflow {
+            // A value question is answered from the sinks: there are few of
+            // them, and one backward search from a sink finds every source
+            // whose value reaches it. Searching forward from each source
+            // would walk the same flow graph once per source.
+            let source_set: std::collections::HashSet<u32> = sources.iter().map(|l| l.get()).collect();
+            let mut stubs = StubEdges::default();
+            'sinks: for &sink in &sinks {
+                // The labels do not cover value flow; every sink is searched.
+                searched += 1;
+                let paths = self.value_paths_into(sink, &source_set, &sanitizers, spec.max_hops, &mut stubs)?;
+                for (src, path) in paths {
+                    if findings.len() >= max_findings {
+                        break 'sinks;
+                    }
+                    let mut infos = Vec::with_capacity(path.len());
+                    for id in &path {
+                        if let Some(info) = self.engine.info(*id)? {
+                            infos.push(info);
+                        }
+                    }
+                    let (Some(source), Some(sink_info)) = (infos.first().cloned(), infos.last().cloned())
+                    else {
+                        continue;
+                    };
+                    findings.push(Finding {
+                        source,
+                        sink: sink_info,
+                        confidence: self.path_confidence(&path, mask)?,
+                        reachable_from_entrypoint: live_set.contains(&src.get()),
+                        path: infos,
+                    });
+                }
+            }
+        }
+
+        'outer: for &src in &sources {
+            if dataflow {
+                break;
+            }
+            for &sink in &sinks {
+                // Checked before doing the work, not after pushing: the
+                // after-push form still produces one finding when the cap is
+                // zero, and a caller asking for zero means zero.
+                if findings.len() >= max_findings {
+                    break 'outer;
+                }
+                if src == sink {
+                    continue;
+                }
+                // The cheap half: the index rejects most pairs without any
+                // search at all.
+                if !self.engine.index().maybe_reaches(src, sink) {
+                    rejected_by_index += 1;
+                    continue;
+                }
+                searched += 1;
+                let Some(path) =
+                    self.path_avoiding(src, sink, &sanitizers, spec.max_hops, mask)?
+                else {
+                    continue;
+                };
+
+                let mut infos = Vec::with_capacity(path.len());
+                for id in &path {
+                    if let Some(info) = self.engine.info(*id)? {
+                        infos.push(info);
+                    }
+                }
+                let (Some(source), Some(sink_info)) = (infos.first().cloned(), infos.last().cloned())
+                else {
+                    continue;
+                };
+                findings.push(Finding {
+                    source,
+                    sink: sink_info,
+                    confidence: self.path_confidence(&path, mask)?,
+                    reachable_from_entrypoint: live_set.contains(&src.get()),
+                    path: infos,
+                });
+            }
+        }
+
+        // Reachable-from-entrypoint first, then shorter paths, then higher
+        // confidence: the order a human should read them in.
+        findings.sort_by(|a, b| {
+            b.reachable_from_entrypoint
+                .cmp(&a.reachable_from_entrypoint)
+                .then(a.depth().cmp(&b.depth()))
+                .then(a.confidence.cmp(&b.confidence))
+        });
+
+        Ok(Analysis {
+            findings,
+            sources: sources.len(),
+            sinks: sinks.len(),
+            sanitizers: sanitizers.len(),
+            pairs_rejected_by_index: rejected_by_index,
+            pairs_searched: searched,
+        })
+    }
+
+    /// Keep only symbols that can carry taint.
+    fn executable(&self, ids: Vec<LocalId>) -> Result<Vec<LocalId>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(info) = self.engine.info(id)?
+                && can_carry_taint(info.kind)
+            {
+                out.push(id);
+            }
+        }
+        Ok(out)
+    }
+
+    fn resolve_all(&self, matchers: &[Matcher], stubs: bool) -> Result<Vec<LocalId>> {
+        let mut out = Vec::new();
+        for m in matchers {
+            out.extend(m.resolve_with(self.engine, stubs)?);
+        }
+        out.sort_unstable_by_key(|l| l.get());
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Each symbol plus its parameters.
+    fn with_parameters(&self, ids: Vec<LocalId>) -> Result<Vec<LocalId>> {
+        let own = RelationMask::of(&[Relation::Contains]);
+        let mut out = Vec::new();
+        for id in ids {
+            out.push(id);
+            for e in self.engine.neighbors(id, codegraph_query::Direction::Out, own)? {
+                if self.engine.kind(e.id)? == codegraph_core::SymbolKind::Parameter {
+                    out.push(e.id);
+                }
+            }
+        }
+        out.sort_unstable_by_key(|l| l.get());
+        out.dedup();
+        Ok(out)
+    }
+
+    /// A path from `from` to `to` that passes through no sanitiser.
+    ///
+    /// Implemented as a BFS that refuses to expand a sanitiser rather than by
+    /// finding a path and then checking it: a sanitised shortest path does not
+    /// mean every path is sanitised, and rejecting on that basis would miss
+    /// real findings.
+    fn path_avoiding(
+        &self,
+        from: LocalId,
+        to: LocalId,
+        sanitizers: &[LocalId],
+        max_hops: u32,
+        mask: RelationMask,
+    ) -> Result<Option<Vec<LocalId>>> {
+        if sanitizers.is_empty() {
+            return self.engine.shortest_path(from, to, mask, max_hops);
+        }
+        let blocked: std::collections::HashSet<u32> =
+            sanitizers.iter().map(|l| l.get()).collect();
+        if blocked.contains(&from.get()) || blocked.contains(&to.get()) {
+            return Ok(None);
+        }
+
+        let n = self.engine.id_space();
+        let mut parent: Vec<u32> = vec![u32::MAX; n];
+        parent[from.index()] = from.get();
+        let mut queue = std::collections::VecDeque::from([(from, 0u32)]);
+
+        while let Some((node, depth)) = queue.pop_front() {
+            if depth >= max_hops {
+                continue;
+            }
+            for e in self.engine.neighbors(node, codegraph_query::Direction::Out, mask)? {
+                let t = e.id;
+                if t.index() >= n || parent[t.index()] != u32::MAX {
+                    continue;
+                }
+                parent[t.index()] = node.get();
+                if t == to {
+                    let mut path = vec![to];
+                    let mut cur = to;
+                    while cur != from {
+                        cur = LocalId::new(parent[cur.index()]);
+                        path.push(cur);
+                    }
+                    path.reverse();
+                    return Ok(Some(path));
+                }
+                // A sanitiser is visited but never expanded through, so a path
+                // cannot route around it by going deeper.
+                if !blocked.contains(&t.get()) {
+                    queue.push_back((t, depth + 1));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Every source in `sources` whose value reaches `sink` along
+    /// `flows_to`, with one path each, avoiding sanitisers. One backward
+    /// search from the sink.
+    ///
+    /// One external stub serves every caller, so walking through it naively
+    /// would join every caller's inputs to every caller's outputs. The edges
+    /// into and out of a stub carry their call site instead, as
+    /// `"<leave>><enter>"`, and a path leaves a stub only along the call
+    /// site it entered on: `y = decode(x)` connects `x` to `y`, and nothing
+    /// else. Walking backwards, that reads: having come *out* of a stub on
+    /// site `s`, go back *into* it only along an edge that entered on `s`.
+    fn value_paths_into(
+        &self,
+        sink: LocalId,
+        sources: &std::collections::HashSet<u32>,
+        sanitizers: &[LocalId],
+        max_hops: u32,
+        stubs: &mut StubEdges,
+    ) -> Result<Vec<(LocalId, Vec<LocalId>)>> {
+        use std::collections::{HashMap, VecDeque};
+        let blocked: std::collections::HashSet<u32> = sanitizers.iter().map(|l| l.get()).collect();
+        if blocked.contains(&sink.get()) {
+            return Ok(Vec::new());
+        }
+        let view = self.engine.store().view();
+        // State: (node, the call site the forward path entered this stub on;
+        // `None` for a non-stub, and for the sink itself, which is entered
+        // on any site).
+        type State = (u32, Option<String>);
+        let start: State = (sink.get(), None);
+        // Child pointers, towards the sink: state -> the state after it on
+        // the forward path.
+        let mut next: HashMap<State, State> = HashMap::new();
+        next.insert(start.clone(), start.clone());
+        let mut queue: VecDeque<(State, u32)> = VecDeque::from([(start, 0u32)]);
+        let mut found: Vec<(LocalId, Vec<LocalId>)> = Vec::new();
+        let mut found_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        while let Some((state, depth)) = queue.pop_front() {
+            if depth >= max_hops {
+                continue;
+            }
+            let node = LocalId::new(state.0);
+            let at_stub = self.engine.is_stub(node) && node != sink;
+            // The edges into this node a forward path could have arrived
+            // by: for a stub, only those entering on the site it left on.
+            let arrivals: Vec<(u32, Option<String>)> = if at_stub {
+                stubs.arrivals(view, node, state.1.as_deref())?
+            } else {
+                view.in_edges(node, DATA_FLOW)?
+                    .into_iter()
+                    .map(|e| (e.node.get(), leave_site(e.context)))
+                    .collect()
+            };
+            for (u, leave) in arrivals {
+                // The state the forward path was in at `u`: a stub's entry
+                // site is the site it then left on.
+                let prev_site = if self.engine.is_stub(LocalId::new(u)) { leave } else { None };
+                let prev: State = (u, prev_site);
+                if next.contains_key(&prev) {
+                    continue;
+                }
+                next.insert(prev.clone(), state.clone());
+                if sources.contains(&u) && u != sink.get() && !blocked.contains(&u) && found_set.insert(u) {
+                    let mut path = vec![LocalId::new(u)];
+                    let mut cur = prev.clone();
+                    while cur.0 != sink.get() {
+                        cur = next[&cur].clone();
+                        path.push(LocalId::new(cur.0));
+                    }
+                    found.push((LocalId::new(u), path));
+                }
+                // A sanitiser is visited but never expanded through.
+                if !blocked.contains(&u) {
+                    queue.push_back((prev, depth + 1));
+                }
+            }
+        }
+        found.sort_by_key(|(_, p)| p.len());
+        Ok(found)
+    }
+
+    /// `Direct` only when every edge on the path was `EXTRACTED`.
+    fn path_confidence(&self, path: &[LocalId], mask: RelationMask) -> Result<Confidence> {
+        let view = self.engine.store().view();
+        for pair in path.windows(2) {
+            let mut best = None;
+            for e in view.out_edges(pair[0], mask)? {
+                if e.node == pair[1] {
+                    best = Some(e.confidence);
+                    break;
+                }
+            }
+            if best != Some(codegraph_core::Confidence::Extracted) {
+                return Ok(Confidence::Inferred);
+            }
+        }
+        Ok(Confidence::Direct)
+    }
+
+    // --- dependency reachability (SCA) ---
+
+    /// Which of our symbols reach the package named `package`.
+    ///
+    /// This is the question that separates "we have a vulnerable dependency in
+    /// the lockfile" from "we actually call into it": the former is true of
+    /// almost every repository, the latter is actionable.
+    ///
+    /// Returns the files that depend on the package, and whether any of them is
+    /// reachable from an entrypoint.
+    pub fn package_reach(&self, package: &str) -> Result<Option<PackageReach>> {
+        let pkg: Vec<LocalId> = self
+            .engine
+            .by_name(package)
+            .into_iter()
+            .filter(|id| {
+                self.engine
+                    .info(*id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|i| i.kind == codegraph_core::SymbolKind::Package)
+            })
+            .collect();
+        let Some(&pkg_id) = pkg.first() else { return Ok(None) };
+
+        // Dependents are found by walking *backwards* from the package node
+        // along `depends_on`.
+        let mask = RelationMask::of(&[Relation::DependsOn]);
+        let mut importers = Vec::new();
+        for e in self.engine.neighbors(pkg_id, codegraph_query::Direction::In, mask)? {
+            if let Some(info) = self.engine.info(e.id)? {
+                importers.push(info);
+            }
+        }
+        importers.sort_by(|a, b| a.path.cmp(&b.path));
+        importers.dedup_by(|a, b| a.id == b.id);
+
+        let live = self.reachable_from_entrypoints()?;
+        let live_set: std::collections::HashSet<u32> = live.iter().map(|l| l.get()).collect();
+        let reachable = importers.iter().any(|i| live_set.contains(&i.id.get()));
+
+        Ok(Some(PackageReach { package: package.to_string(), importers, reachable_from_entrypoint: reachable }))
+    }
+
+    /// Every external package the corpus depends on, with its importer count.
+    pub fn packages(&self) -> Result<Vec<(String, usize)>> {
+        let view = self.engine.store().view();
+        let mask = RelationMask::of(&[Relation::DependsOn]);
+        let mut out = Vec::new();
+        for si in 0..view.segment_count() {
+            let (seg, base) = view.segment(si);
+            let kinds = seg.node_kinds()?;
+            let names = seg.node_names()?;
+            for l in 0..seg.node_count() {
+                let id = LocalId::new(base + l as u32);
+                if codegraph_core::SymbolKind::from_u8(kinds[l]) != codegraph_core::SymbolKind::Package
+                    || !view.is_canonical(id)
+                {
+                    continue;
+                }
+                let n = view.in_edges(id, mask)?.len();
+                out.push((seg.string(names[l]).to_string(), n));
+            }
+        }
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PackageReach {
+    pub package: String,
+    /// Files that import it.
+    pub importers: Vec<SymbolInfo>,
+    pub reachable_from_entrypoint: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Analysis {
+    pub findings: Vec<Finding>,
+    pub sources: usize,
+    pub sinks: usize,
+    pub sanitizers: usize,
+    /// Pairs the reachability index ruled out without searching. Reported
+    /// because it is the measure of whether the index is earning its space.
+    pub pairs_rejected_by_index: usize,
+    pub pairs_searched: usize,
+}
+
+impl Analysis {
+    pub fn total_pairs(&self) -> usize {
+        self.pairs_rejected_by_index + self.pairs_searched
+    }
+    /// Share of candidate pairs answered without a graph search.
+    pub fn rejection_rate(&self) -> f64 {
+        if self.total_pairs() == 0 {
+            return 0.0;
+        }
+        self.pairs_rejected_by_index as f64 / self.total_pairs() as f64
+    }
+}

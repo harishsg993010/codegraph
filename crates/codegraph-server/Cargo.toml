@@ -1,0 +1,29 @@
+[package]
+name = "codegraph-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "codegraph-mcp"
+path = "src/main.rs"
+
+[dependencies]
+codegraph-core.workspace = true
+codegraph-store.workspace = true
+codegraph-index.workspace = true
+codegraph-query.workspace = true
+codegraph-security.workspace = true
+codegraph-resolve.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+rmcp = { version = "3", features = ["server", "macros", "schemars", "transport-io"] }
+schemars = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+
+[dev-dependencies]
+codegraph-resolve.workspace = true
+tempfile = "3"
+serde_json.workspace = true
+rmcp = { version = "3", features = ["server", "client", "macros", "schemars", "transport-io", "transport-async-rw"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util"] }

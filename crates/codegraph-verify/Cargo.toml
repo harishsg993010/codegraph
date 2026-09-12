@@ -1,0 +1,16 @@
+[package]
+name = "codegraph-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+codegraph-core.workspace = true
+codegraph-store.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

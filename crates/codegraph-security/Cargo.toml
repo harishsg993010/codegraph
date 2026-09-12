@@ -1,0 +1,15 @@
+[package]
+name = "codegraph-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+codegraph-core.workspace = true
+codegraph-store.workspace = true
+codegraph-index.workspace = true
+codegraph-query.workspace = true
+
+[dev-dependencies]
+codegraph-resolve.workspace = true
+tempfile = "3"

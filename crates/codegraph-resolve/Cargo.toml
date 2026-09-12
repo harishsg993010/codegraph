@@ -1,0 +1,18 @@
+[package]
+name = "codegraph-resolve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+codegraph-core.workspace = true
+codegraph-store.workspace = true
+codegraph-extract.workspace = true
+rayon.workspace = true
+
+codegraph-index.workspace = true
+tempfile = "3"
+
+[dev-dependencies]
+tempfile = "3"
+codegraph-query.workspace = true

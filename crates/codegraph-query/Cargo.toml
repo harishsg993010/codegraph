@@ -1,0 +1,15 @@
+[package]
+name = "codegraph-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+codegraph-core.workspace = true
+codegraph-store.workspace = true
+codegraph-index.workspace = true
+
+tempfile = "3"
+
+[dev-dependencies]
+tempfile = "3"

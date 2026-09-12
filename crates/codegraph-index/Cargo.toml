@@ -1,0 +1,16 @@
+[package]
+name = "codegraph-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+codegraph-core.workspace = true
+codegraph-store.workspace = true
+blake3.workspace = true
+memmap2.workspace = true
+zerocopy.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

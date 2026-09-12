@@ -1,0 +1,20 @@
+[package]
+name = "codegraph-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "codegraph"
+path = "src/main.rs"
+
+[dependencies]
+codegraph-core.workspace = true
+codegraph-store.workspace = true
+codegraph-index.workspace = true
+codegraph-query.workspace = true
+codegraph-extract.workspace = true
+codegraph-resolve.workspace = true
+codegraph-security.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }

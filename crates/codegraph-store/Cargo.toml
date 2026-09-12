@@ -1,0 +1,17 @@
+[package]
+name = "codegraph-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+codegraph-core.workspace = true
+blake3.workspace = true
+memmap2.workspace = true
+zerocopy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

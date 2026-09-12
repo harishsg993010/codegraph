@@ -1,0 +1,56 @@
+[package]
+name = "codegraph-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+tree-sitter.workspace = true
+anyhow.workspace = true
+rayon.workspace = true
+
+# --- Tier 1: the config-driven core ---
+tree-sitter-python     = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-java       = "0.23"
+tree-sitter-c          = "0.24"
+tree-sitter-cpp        = "0.23"
+tree-sitter-go         = "0.25"
+tree-sitter-rust       = "0.24"
+tree-sitter-c-sharp    = "0.23"
+tree-sitter-ruby       = "0.23"
+
+# --- Tier 2 ---
+tree-sitter-kotlin-ng  = "1.1"     # the 0.3.x `tree-sitter-kotlin` pins tree-sitter <0.23; -ng is on the shared ABI
+tree-sitter-scala      = "0.26"
+tree-sitter-php        = "0.24"
+tree-sitter-swift      = "0.7"
+tree-sitter-lua        = "0.5"
+tree-sitter-groovy     = "0.1"
+tree-sitter-bash       = "0.25"
+tree-sitter-json       = "0.24"
+tree-sitter-md         = "0.5"
+tree-sitter-html       = "0.23"
+tree-sitter-css        = "0.25"
+
+# --- Tier 3 ---
+tree-sitter-fortran    = "0.6"
+tree-sitter-verilog    = "1.0"
+tree-sitter-julia      = "0.23"
+tree-sitter-elixir     = "0.3"
+tree-sitter-zig        = "1.1"
+tree-sitter-objc       = "3.0"
+tree-sitter-ocaml      = "0.25"
+tree-sitter-commonlisp = "0.4"
+tree-sitter-powershell = "0.26"
+tree-sitter-sequel     = "0.3"     # maintained SQL grammar; `tree-sitter-sql` 0.0.2 pins tree-sitter ^0.19
+tree-sitter-hcl        = "1.1"
+tree-sitter-dart       = "0.2"
+tree-sitter-pascal     = "0.10"
+tree-sitter-sfapex     = "3.0"     # Apex; `tree-sitter-apex` 1.0 pins tree-sitter ~0.20
+tree-sitter-toml-ng    = "0.7"
+tree-sitter-xml        = "0.7"
+tree-sitter-yaml       = "0.7"
+tree-sitter-svelte-ng  = "1.0"
