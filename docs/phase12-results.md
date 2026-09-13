@@ -11,7 +11,7 @@ has to be run by hand: every command takes a store or a source tree,
 indexes a tree on first use, and brings the store up to date before it
 answers; `codegraph watch` and the MCP server keep a store current
 between commands, and a served graph swaps to the new generation without
-a restart. 359 tests, clippy-clean.
+a restart. 361 tests, clippy-clean.
 
 ---
 

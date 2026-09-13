@@ -14,6 +14,20 @@ Eleven languages through one generic tree-sitter walk driven by per-language
 syntax tables: Python, JavaScript, TypeScript, TSX, Java, C, C++, Go, Rust,
 C#, Ruby.
 
+## Quick start
+
+```
+cargo build --release
+codegraph deep ./repo upload size limit        # first use indexes ./repo into ./repo/.codegraph
+codegraph explain ./repo SomeFunction          # every later command syncs the store first, then answers
+codegraph diff ./repo                          # what the uncommitted edits break, against the last commit
+codegraph-mcp ./repo                           # the same as MCP tools; follows the tree as it changes
+```
+
+The store is always `<repo>/.codegraph`; in a git checkout it is added to
+`.git/info/exclude`. `.codegraphignore` (gitignore syntax) keeps files
+out of the graph.
+
 ```
 $ codegraph deep ./gitea upload size limit -n 2
 indexed ./gitea in 18.0s: 3342 files, 352264 symbols, 2299027 edges (store: ./gitea/.codegraph)
