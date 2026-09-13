@@ -1,7 +1,8 @@
 # Phase 9 — `diff`: what a change does before it lands
 
 `codegraph diff <source>` compares the tree as it is now with the tree as
-the store last indexed it, and says — in graph terms, not line terms —
+the store last indexed it (since Phase 12: with the last commit, when git
+knows the tree — see `phase12-results.md`), and says — in graph terms, not line terms —
 what changed: every function, method, type, variable, constant and field
 that was added, removed, re-signed, redefined or re-bound; which
 dependents each change breaks outright; and what each change reaches,

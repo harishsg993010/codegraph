@@ -130,6 +130,32 @@ reader always sees a whole generation
 `a_source_tree_is_indexed_on_first_use_and_kept_current_after`, through
 the built binary).
 
+**One store per tree.** The store is `<tree>/.codegraph`, always; the
+`--store` options are gone. A command given a store directory still
+works (the directory records its tree), but there is one place a tree's
+graph lives, so a query, `watch`, the server and `diff` cannot disagree
+about which store they mean, and one `.git/info/exclude` line covers it.
+
+**`diff` against the last commit.** Syncing before every answer changed
+what "since the store was indexed" means: after any query the store *is*
+the tree, and a diff against it would be empty. So `diff` now compares
+with `HEAD` when git knows the tree. It asks git for the dirty paths and
+each one's committed content (`git show HEAD:path`; `None` for a file the
+commit lacks), builds that as an *overlay* over the working tree —
+`update_tree_with(…, overlay)`: the named files have the overlay's
+content or are absent, everything else is as on disk — and runs it on a
+scratch copy of the store to get the graph at `HEAD`; a second scratch
+copy is brought to the tree as it is; the two are compared as before.
+The store's own state does not matter: behind the tree, at it, or ahead
+of a reverted edit, the report is the same
+(`diff_compares_with_head_whatever_the_store_holds`: an uncommitted
+removal is reported after the store was synced past it, reported as
+nothing once committed, and a working-tree deletion is a removal though
+the store already lacks the file). Without git the baseline is the store,
+as before, and the report says which (`against HEAD 4f307ec685` /
+`against the store`). Scratch copies hard-link the segments — written
+once, never modified in place — so a copy of a 120 MB store is free.
+
 **Watching** (`watch.rs`). `TreeWatcher` is a recursive `notify` watch
 with a debounce: events are gathered until the tree has been quiet for
 the configured period, then the relevant paths are delivered as one
@@ -165,6 +191,9 @@ way.
 | files indexed | 3,342 before and after — Gitea's `.gitignore` excludes nothing the skip list did not |
 | base + deltas vs fresh, after a git-detected edit and its reversal | identical, 0 dangling |
 | `watch`, one-file edit end to end (event → updated store) | ≈ 1.1 s with the 400 ms debounce |
+| `diff`, clean tree | 0.4 s (git says nothing is dirty; no scratch work) |
+| `diff`, one-file body edit, store synced | 2.7 s (two scratch updates; was 0.7 s against the store) |
+| `diff`, a parameter added to a function 626 files import | 15 s (both scratch graphs re-extract the importers) |
 
 ## Limits, stated
 

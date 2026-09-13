@@ -21,8 +21,17 @@ pub use crate::tree::{SKIP_DIRS, Scan, scan};
 /// on extraction throughput, because parser construction otherwise dominates
 /// everything the walk does.
 pub fn extract_all(root: &Path, files: &[PathBuf]) -> Vec<FileExtract> {
+    extract_all_with(root, files, None)
+}
+
+/// Files whose content is taken from here rather than from disk: `Some`
+/// bytes stand in for the file, `None` says the file is absent. What
+/// `diff` uses to see the tree as it was at the last commit.
+pub type Overlay = HashMap<String, Option<Vec<u8>>>;
+
+/// [`extract_all`] with an overlay.
+pub fn extract_all_with(root: &Path, files: &[PathBuf], overlay: Option<&Overlay>) -> Vec<FileExtract> {
     use std::cell::RefCell;
-    use std::collections::HashMap;
 
     // The user's library summaries, from `<root>/.codegraph-summaries.json`
     // when there is one. A malformed file is said so, once, and ignored:
@@ -40,7 +49,6 @@ pub fn extract_all(root: &Path, files: &[PathBuf]) -> Vec<FileExtract> {
         .par_iter()
         .filter_map(|path| {
             let config = lang::for_path(path)?;
-            let source = std::fs::read(path).ok()?;
             // Repo-relative, forward slashes: an absolute path in a key would
             // make the store non-portable between checkouts.
             let rel = path
@@ -48,6 +56,11 @@ pub fn extract_all(root: &Path, files: &[PathBuf]) -> Vec<FileExtract> {
                 .unwrap_or(path)
                 .to_string_lossy()
                 .replace('\\', "/");
+            let source = match overlay.and_then(|o| o.get(&rel)) {
+                Some(Some(bytes)) => bytes.clone(),
+                Some(None) => return None,
+                None => std::fs::read(path).ok()?,
+            };
             WALKERS.with(|cache| {
                 let mut cache = cache.borrow_mut();
                 let walker = match cache.entry(config.name) {
@@ -224,8 +237,10 @@ fn find_changes(
     root: &Path,
     stored: &HashMap<String, (u64, i64, u64)>,
     previous: Option<&TreeState>,
+    overlay: Option<&Overlay>,
 ) -> Changes {
-    let same_root = previous.is_some_and(|p| {
+    // An overlay describes a tree git does not know; every file is compared.
+    let same_root = overlay.is_none() && previous.is_some_and(|p| {
         std::path::absolute(root).map(|a| a.to_string_lossy().replace('\\', "/")).ok().as_deref() == Some(p.root.as_str())
     });
     if same_root && let Some((now, candidates)) = previous.and_then(|p| crate::tree::git_candidates(root, p)) {
@@ -257,17 +272,37 @@ fn find_changes(
     let mut changed: Vec<PathBuf> = Vec::new();
     for (path, &(now_size, now_mtime)) in scan.files.iter().zip(&scan.metadata) {
         let rel = rel_path(root, path);
-        let unchanged = match stored.get(&rel) {
-            Some(&(hash, mtime, size)) if now_size == size => {
-                (mtime != 0 && now_mtime == mtime)
-                    || std::fs::read(path).is_ok_and(|bytes| content_hash(&bytes) == hash)
-            }
-            _ => false,
+        let unchanged = match overlay.and_then(|o| o.get(&rel)) {
+            // The overlay says what this file holds — or that it is not there.
+            Some(Some(bytes)) => stored.get(&rel).is_some_and(|&(hash, _, _)| content_hash(bytes) == hash),
+            Some(None) => continue,
+            None => match stored.get(&rel) {
+                Some(&(hash, mtime, size)) if now_size == size => {
+                    (mtime != 0 && now_mtime == mtime)
+                        || std::fs::read(path).is_ok_and(|bytes| content_hash(&bytes) == hash)
+                }
+                _ => false,
+            },
         };
         present.insert(rel);
         if !unchanged {
             changed.push(path.clone());
         }
+    }
+    // Overlay files the tree does not have (deleted since the commit).
+    if let Some(o) = overlay {
+        for (rel, bytes) in o {
+            if let Some(bytes) = bytes
+                && !present.contains(rel)
+                && lang::for_path(Path::new(rel)).is_some()
+            {
+                present.insert(rel.clone());
+                if stored.get(rel).is_none_or(|&(hash, _, _)| content_hash(bytes) != hash) {
+                    changed.push(root.join(rel));
+                }
+            }
+        }
+        changed.sort();
     }
     let mut deleted: Vec<String> = stored.keys().filter(|p| !present.contains(*p)).cloned().collect();
     deleted.sort();
@@ -308,6 +343,20 @@ pub fn update_tree(
     store: &mut Store,
     repo: &str,
     policy: &CompactPolicy,
+) -> Result<UpdateReport> {
+    update_tree_with(root, store, repo, policy, None)
+}
+
+/// [`update_tree`] against the tree as an overlay describes it: the files
+/// named there have the overlay's content (or are absent), the rest are as
+/// on disk. The store's tree record is not written — the overlay is not
+/// the tree.
+pub fn update_tree_with(
+    root: &Path,
+    store: &mut Store,
+    repo: &str,
+    policy: &CompactPolicy,
+    overlay: Option<&Overlay>,
 ) -> Result<UpdateReport> {
     // A store with no compacted base cannot answer the neighbourhood
     // question (it needs the reverse CSR), so it gets the full treatment.
@@ -350,7 +399,7 @@ pub fn update_tree(
         .map(|(p, r)| (p.to_string(), (r.content_hash, r.mtime_nanos, r.size)))
         .collect();
     let previous = TreeState::load(store.root());
-    let Changes { changed, deleted, present, scanned, how, git } = find_changes(root, &stored, previous.as_ref());
+    let Changes { changed, deleted, present, scanned, how, git } = find_changes(root, &stored, previous.as_ref(), overlay);
     let state = TreeState {
         root: std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()).to_string_lossy().replace('\\', "/"),
         repo: repo.to_string(),
@@ -358,7 +407,9 @@ pub fn update_tree(
     };
 
     if changed.is_empty() && deleted.is_empty() {
-        let _ = state.save(store.root());
+        if overlay.is_none() {
+            let _ = state.save(store.root());
+        }
         return Ok(UpdateReport {
             scanned,
             changed: 0,
@@ -379,7 +430,7 @@ pub fn update_tree(
     // --- the neighbourhood ---
     // Changed files are extracted first: whether a neighbour needs
     // re-extracting depends on what changed *in* them.
-    let changed_extracts = extract_all(root, &changed);
+    let changed_extracts = extract_all_with(root, &changed, overlay);
     let touched: HashSet<String> = changed
         .iter()
         .map(|p| rel_path(root, p))
@@ -529,7 +580,7 @@ pub fn update_tree(
     // against a corpus that no longer contains it.
     store.remove_files(&deleted)?;
     let mut files = changed_extracts;
-    files.extend(extract_all(root, &neighbours));
+    files.extend(extract_all_with(root, &neighbours, overlay));
     // A file that would not extract must not keep its stale rows.
     let extracted: HashSet<&str> = files.iter().map(|f| f.path.as_str()).collect();
     let failed: Vec<String> = changed
@@ -543,7 +594,9 @@ pub fn update_tree(
     // Only the delta tier: the ratio was applied above, as a rebuild.
     let deltas_only = CompactPolicy { max_delta_ratio: f64::INFINITY, ..*policy };
     let compaction = compact_tiered(store, &deltas_only)?;
-    let _ = state.save(store.root());
+    if overlay.is_none() {
+        let _ = state.save(store.root());
+    }
 
     Ok(UpdateReport {
         scanned,

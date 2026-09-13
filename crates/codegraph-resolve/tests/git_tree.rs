@@ -179,3 +179,47 @@ fn the_store_is_kept_out_of_the_repository() {
     let elsewhere = tempfile::tempdir().unwrap();
     assert!(!codegraph_resolve::exclude_store_from_git(&repo, elsewhere.path()));
 }
+
+#[test]
+fn diff_compares_with_head_whatever_the_store_holds() {
+    use codegraph_resolve::{DiffOptions, diff_tree};
+    let Some(d) = repo() else { return };
+    let sd = tempfile::tempdir().unwrap();
+    let mut store = Store::create(sd.path()).unwrap();
+    index_tree(d.path(), &mut store, "").unwrap();
+    drop(store);
+
+    // An uncommitted edit that removes `old_api`, and an untracked file.
+    write(d.path(), "lib.py", "def helper(x):\n    return x\n\ndef new_api():\n    return helper(1)\n");
+    write(d.path(), "extra.py", "def extra():\n    return 1\n");
+    // The store is synced past the edit, as any query would leave it.
+    let mut store = Store::open(sd.path()).unwrap();
+    let r = update_tree(d.path(), &mut store, "", &NEVER).unwrap();
+    assert_eq!(r.changed, 2);
+    drop(store);
+
+    // The diff is still against the commit, not the store.
+    let r = diff_tree(d.path(), sd.path(), &DiffOptions::default()).unwrap();
+    assert!(r.baseline.starts_with("HEAD "), "{}", r.baseline);
+    assert_eq!(r.changed_files, ["extra.py", "lib.py"]);
+    let removed: Vec<&str> = r.changes.iter().filter(|c| matches!(c.what, codegraph_resolve::ChangeKind::Removed)).map(|c| c.symbol.name.as_str()).collect();
+    assert_eq!(removed, ["old_api"]);
+    assert!(r.breaking() >= 1, "process() called old_api: {}", r.render(40));
+    assert!(r.changes.iter().any(|c| c.symbol.name == "extra"), "{}", r.render(40));
+
+    // Committed: nothing is uncommitted any more.
+    assert!(git(d.path(), &["add", "-A"]));
+    assert!(git(d.path(), &["commit", "-q", "-m", "two"]));
+    let r = diff_tree(d.path(), sd.path(), &DiffOptions::default()).unwrap();
+    assert!(r.changed_files.is_empty() && r.deleted_files.is_empty(), "{}", r.render(40));
+
+    // A file deleted from the working tree is a removal against HEAD even
+    // though the store already lacks it.
+    std::fs::remove_file(d.path().join("extra.py")).unwrap();
+    let mut store = Store::open(sd.path()).unwrap();
+    update_tree(d.path(), &mut store, "", &NEVER).unwrap();
+    drop(store);
+    let r = diff_tree(d.path(), sd.path(), &DiffOptions::default()).unwrap();
+    assert_eq!(r.deleted_files, ["extra.py"], "{}", r.render(40));
+    assert!(r.changes.iter().any(|c| c.symbol.name == "extra" && matches!(c.what, codegraph_resolve::ChangeKind::Removed)));
+}

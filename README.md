@@ -30,7 +30,7 @@ indexed ./gitea in 18.0s: 3342 files, 352264 symbols, 2299027 edges (store: ./gi
           name matches 'limit'
 
 $ codegraph diff ./gitea          # after adding a parameter in modules/util/truncate.go
-1 file(s) changed, 0 deleted, 628 neighbour(s) re-extracted
+1 file(s) changed, 0 deleted, 626 neighbour(s) re-extracted, against HEAD 4f307ec685
 
 1 change(s), 1 breaking:
 
@@ -61,9 +61,11 @@ check.
 
 ## Nothing to run by hand
 
-Every command takes a store **or a source tree**. A tree with no store
-is indexed on first use, into `<tree>/.codegraph` (and, in a git
-repository, added to `.git/info/exclude`). From then on **every command
+Every command takes a source tree (or its store). **The store always
+lives at `<tree>/.codegraph`** — one place, so every command, the
+watcher and the server find the same graph, and one ignore rule covers
+it. A tree with no store is indexed on first use (and, in a git
+repository, the store is added to `.git/info/exclude`). From then on **every command
 brings the store up to date before it answers** — the change you just
 made is in the graph you are asking about — and says so on stderr when
 anything changed (`updated in 0.7s: 1 changed, 0 deleted, 1
@@ -146,15 +148,15 @@ indexed on first use and synced before every answer.
 
 | command | what it answers |
 |---|---|
-| `index <src> [--store dir] [--full]` | Build the store explicitly — the other commands do this on first use and keep it current after. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. Changed files are found through git when git is there, by a walk otherwise. A one-line edit on a 3,300-file tree is 0.7 s; a full index is 16–20 s. |
-| `watch <src> [--store dir] [--debounce-ms n]` | Index, then keep the store current: re-index what changes after each quiet period, one line per round. |
+| `index <src> [--full]` | Build `<src>/.codegraph` explicitly — the other commands do this on first use and keep it current after. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. Changed files are found through git when git is there, by a walk otherwise. A one-line edit on a 3,300-file tree is 0.7 s; a full index is 16–20 s. |
+| `watch <src> [--debounce-ms n]` | Index, then keep the store current: re-index what changes after each quiet period, one line per round. |
 | `search <store> <query>` | Symbols by name, prefix, substring or path. |
 | `deep <store> <terms and filters>` | **Deep search**: find code by what it is connected to. Terms match names and paths by subword, and the inside of functions — locals, parameters, callees, referenced variables, branch conditions; matches spread along calls, references and value flow, so the function that connects two terms scores for both. Filters: `kind:`, `in:`, `calls:`, `called-by:`, `references:`, `referenced-by:`, `reaches:`, `flows-to:`, `flows-from:`. Every hit says why. |
 | `explain <store> <symbol>` | What a symbol is and what it connects to: members, parameters, locals, callers, callees, references, flows in and out, CFG size. `func.local` and `path:name` disambiguate. |
 | `path <store> <a> <b>` | Shortest path between two symbols. |
 | `affected <store> <symbol>` | Blast radius: what breaks if this changes. |
 | `cfg <store> <callable>` | The stored control-flow graph, with what each block reads and writes. |
-| `diff <src> [--depth n] [--fail-on-break]` | What the uncommitted edits do: symbols added, removed, re-signed, redefined or re-bound; the dependents each breaks; a trace of what each reaches through calls, references, imports, subtypes and value flow. Runs on a scratch copy; the store is not modified. |
+| `diff <src> [--depth n] [--fail-on-break]` | What the uncommitted edits do, **against the last commit** when git knows the tree (against the store otherwise): symbols added, removed, re-signed, redefined or re-bound; the dependents each breaks; a trace of what each reaches through calls, references, imports, subtypes and value flow. Runs on scratch copies; the store is not modified. |
 | `audit <store> [--mode callgraph\|dataflow]` | Taint analyses from starter specs (command injection, SQL injection, path traversal). Call-graph mode: a call path from a source to a sink function. Dataflow mode: a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. |
 | `deps <store> [package]` | Which of our code reaches an external package. |
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
@@ -180,9 +182,8 @@ cargo build --release
 cargo test --workspace
 ```
 
-The store lives in `<source-dir>/.codegraph` (or wherever `--store`
-says); the test suite needs no network and skips the git tests when no
-`git` binary is installed.
+The store lives in `<source-dir>/.codegraph`; the test suite needs no
+network and skips the git tests when no `git` binary is installed.
 
 ## Layout
 
@@ -250,7 +251,11 @@ the rest is fundamental.
   back to the walk, which is always correct.
 - **The pre-answer sync** costs a no-op update on every command: ≈ 0.25 s
   of `git` on a 3,300-file tree, a walk without git. `--no-sync` skips
-  it; a running `watch` or server leaves it nothing to find.
+  it; a running `watch` or server leaves it nothing to find. An edit to
+  the API of a widely imported file re-extracts every importer, and when
+  that exceeds the delta policy's share of the base the next command
+  rebuilds the store in full (≈ 20 s on Gitea) rather than write a delta
+  that large.
 - **Deep search** matches what the graph holds — names, paths, locals,
   parameters, callees, referenced variables, branch predicates — not
   string literals or comments; spreading is two hops and never through a

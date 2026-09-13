@@ -137,6 +137,9 @@ pub struct Hit {
 
 #[derive(Debug, Clone)]
 pub struct DiffReport {
+    /// What the tree was compared with: `HEAD <commit>` when git knows
+    /// the tree, else `the store`.
+    pub baseline: String,
     pub changed_files: Vec<String>,
     pub deleted_files: Vec<String>,
     /// Files re-extracted because they share an edge with a changed one.
@@ -176,15 +179,16 @@ impl DiffReport {
         let kind = |n: &Named| format!("[{}]", n.kind);
 
         if self.changed_files.is_empty() && self.deleted_files.is_empty() {
-            out.push_str("no changes since the store was indexed\n");
+            let _ = writeln!(out, "no changes against {}", self.baseline);
             return out;
         }
         let _ = writeln!(
             out,
-            "{} file(s) changed, {} deleted, {} neighbour(s) re-extracted",
+            "{} file(s) changed, {} deleted, {} neighbour(s) re-extracted, against {}",
             self.changed_files.len(),
             self.deleted_files.len(),
-            self.neighbour_files.len()
+            self.neighbour_files.len(),
+            self.baseline
         );
         for f in &self.changed_files {
             let _ = writeln!(out, "  ~ {f}");
@@ -368,22 +372,86 @@ fn named(view: View<'_>, id: LocalId) -> Result<Named> {
     })
 }
 
-/// Compare the tree at `source` with the store at `store_dir`.
-pub fn diff_tree(source: &Path, store_dir: &Path, opts: &DiffOptions) -> Result<DiffReport> {
-    let old = Store::open(store_dir)?;
-
-    // A scratch copy of the store: the base segments and the manifest,
-    // nothing derived. The update runs there; the real store is not touched.
+/// A scratch copy of a store: the segments, the manifest and the tree
+/// record, nothing derived. Updates run there; the real store is not
+/// touched.
+fn scratch_copy(store_dir: &Path) -> Result<tempfile::TempDir> {
     let scratch = tempfile::tempdir().map_err(|e| io_err("creating a scratch store", e))?;
     for entry in std::fs::read_dir(store_dir).map_err(|e| io_err("reading the store", e))? {
         let entry = entry.map_err(|e| io_err("reading the store", e))?;
         let name = entry.file_name().to_string_lossy().to_string();
         if name == "CURRENT" || name == crate::tree::STATE_FILE || name.starts_with("MANIFEST-") || name.ends_with(".cgseg") {
-            std::fs::copy(entry.path(), scratch.path().join(&name)).map_err(|e| io_err("copying the store", e))?;
+            let to = scratch.path().join(&name);
+            // A segment is written once and never modified in place, so a
+            // hard link is as good as a copy and costs nothing; the small
+            // files are copied, since the scratch store rewrites them.
+            if !name.ends_with(".cgseg") || std::fs::hard_link(entry.path(), &to).is_err() {
+                std::fs::copy(entry.path(), &to).map_err(|e| io_err("copying the store", e))?;
+            }
         }
     }
-    let mut new = Store::open(scratch.path())?;
+    Ok(scratch)
+}
+
+/// The tree as it was at `HEAD`, as an overlay over the working tree:
+/// every path git reports dirty, with its committed content — or `None`
+/// for a file the commit does not have. `None` altogether when git cannot
+/// say (no git, not a repository, no commit).
+fn head_overlay(source: &Path) -> Option<(String, crate::pipeline::Overlay)> {
+    let repo = crate::tree::detect_git(source)?;
+    let state = crate::tree::git_state(source, &repo)?;
+    let mut overlay = crate::pipeline::Overlay::new();
+    for rel in &state.dirty {
+        if codegraph_extract::lang::for_path(Path::new(rel)).is_none() {
+            continue;
+        }
+        // A dirty file the ignore rules exclude is in neither graph.
+        let on_disk = source.join(rel).is_file();
+        if (on_disk && !crate::tree::is_indexable(source, rel)) || (!on_disk && crate::tree::is_ignored(source, rel)) {
+            continue;
+        }
+        overlay.insert(rel.clone(), crate::tree::git_show_head(source, &repo, rel));
+    }
+    Some((state.head, overlay))
+}
+
+/// What the uncommitted changes in the tree at `source` do to the graph.
+///
+/// With git, the baseline is `HEAD`: a scratch copy of the store is
+/// brought to the tree as the commit has it (the dirty files replaced by
+/// their committed content, or removed), a second copy to the tree as it
+/// is, and the two are compared. The store's own state does not matter —
+/// it may be behind the tree, or exactly at it because a query just
+/// synced it. Without git, the baseline is the store as it stands.
+pub fn diff_tree(source: &Path, store_dir: &Path, opts: &DiffOptions) -> Result<DiffReport> {
     let never = CompactPolicy { max_deltas: usize::MAX, max_delta_ratio: f64::INFINITY };
+    let head = head_overlay(source);
+    let baseline = match &head {
+        Some((commit, _)) => format!("HEAD {}", &commit[..commit.len().min(10)]),
+        None => "the store".to_string(),
+    };
+    // Nothing dirty that the graph would hold: nothing to compare.
+    if head.as_ref().is_some_and(|(_, o)| o.is_empty()) {
+        return Ok(DiffReport { baseline, changed_files: Vec::new(), deleted_files: Vec::new(), neighbour_files: Vec::new(), changes: Vec::new() });
+    }
+
+    // The old graph: the store at HEAD, or the store as it is.
+    let old_scratch = scratch_copy(store_dir)?;
+    let old = match &head {
+        Some((_, overlay)) => {
+            let mut s = Store::open(old_scratch.path())?;
+            let r = crate::pipeline::update_tree_with(source, &mut s, &opts.repo, &never, Some(overlay))?;
+            if !r.incremental {
+                return Err(StoreError::Corrupt("the store has no usable base to diff against; run `index` first".into()));
+            }
+            s
+        }
+        None => Store::open(old_scratch.path())?,
+    };
+
+    // The new graph: the old one brought to the tree as it is.
+    let new_scratch = scratch_copy(old.root())?;
+    let mut new = Store::open(new_scratch.path())?;
     let report = update_tree(source, &mut new, &opts.repo, &never)?;
     if !report.incremental {
         return Err(StoreError::Corrupt("the store has no usable base to diff against; run `index` first".into()));
@@ -470,7 +538,7 @@ pub fn diff_tree(source: &Path, store_dir: &Path, opts: &DiffOptions) -> Result<
     changed_files.sort();
     let mut deleted_files = report.deleted_paths.clone();
     deleted_files.sort();
-    Ok(DiffReport { changed_files, deleted_files, neighbour_files, changes })
+    Ok(DiffReport { baseline, changed_files, deleted_files, neighbour_files, changes })
 }
 
 fn edge_delta_of(o: &Row, n: &Row) -> Vec<(Relation, i64)> {

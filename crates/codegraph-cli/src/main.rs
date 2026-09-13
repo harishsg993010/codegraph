@@ -43,11 +43,8 @@ enum Command {
     /// a delta segment beside the base. The base is rebuilt once the deltas
     /// grow to a share of it.
     Index {
-        /// Source directory to index.
+        /// Source directory to index. The store is `<source>/.codegraph`.
         source: PathBuf,
-        /// Where to write the store. Defaults to `<source>/.codegraph`.
-        #[arg(short, long)]
-        store: Option<PathBuf>,
         /// Repository tag, for multi-repo stores.
         #[arg(long, default_value = "")]
         repo: String,
@@ -60,10 +57,8 @@ enum Command {
     /// `.codegraphignore`; with git installed, change detection asks git.
     /// Runs until interrupted.
     Watch {
+        /// Source directory. The store is `<source>/.codegraph`.
         source: PathBuf,
-        /// Store directory (default: `<source>/.codegraph`).
-        #[arg(long)]
-        store: Option<PathBuf>,
         /// Quiet period after the last file-system event before an update, in milliseconds.
         #[arg(long, default_value_t = 400)]
         debounce_ms: u64,
@@ -75,11 +70,8 @@ enum Command {
     ///
     /// The store is not modified; the update runs on a scratch copy.
     Diff {
-        /// Source directory, as given to `index`.
+        /// Source directory. The store is `<source>/.codegraph`.
         source: PathBuf,
-        /// The store. Defaults to `<source>/.codegraph`.
-        #[arg(short, long)]
-        store: Option<PathBuf>,
         /// Repository tag, as given to `index`.
         #[arg(long, default_value = "")]
         repo: String,
@@ -199,8 +191,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     NO_SYNC.store(cli.no_sync, std::sync::atomic::Ordering::Relaxed);
     match cli.command {
-        Command::Index { source, store, repo, full } => cmd_index(&source, store, &repo, full),
-        Command::Watch { source, store, debounce_ms } => cmd_watch(&source, store, debounce_ms),
+        Command::Index { source, repo, full } => cmd_index(&source, &repo, full),
+        Command::Watch { source, debounce_ms } => cmd_watch(&source, debounce_ms),
         Command::Compact { store } => cmd_compact(&store),
         Command::Search { store, query, limit } => cmd_search(&store, &query, limit),
         Command::Deep { store, query, limit } => {
@@ -215,8 +207,8 @@ fn main() -> Result<()> {
         }
         Command::Audit { store, kind, mode, limit, excludes } => cmd_audit(&store, kind, mode, limit, &excludes),
         Command::Cfg { store, symbol } => cmd_cfg(&store, &symbol),
-        Command::Diff { source, store, repo, depth, limit, fail_on_break } => {
-            cmd_diff(&source, store, &repo, depth, limit, fail_on_break)
+        Command::Diff { source, repo, depth, limit, fail_on_break } => {
+            cmd_diff(&source, &repo, depth, limit, fail_on_break)
         }
         Command::Deps { store, package, limit } => cmd_deps(&store, package.as_deref(), limit),
         Command::Stats { store } => cmd_stats(&store),
@@ -404,8 +396,15 @@ fn tag(e: &Engine<Index>, i: &SymbolInfo) -> String {
 
 // --- commands ---
 
-fn cmd_index(source: &Path, store: Option<PathBuf>, repo: &str, full: bool) -> Result<()> {
-    let store_dir = store.unwrap_or_else(|| source.join(".codegraph"));
+/// Where a tree's store lives. Always `<tree>/.codegraph`: one place, so
+/// every command, the watcher and the server find the same store, and a
+/// `.gitignore` or `.git/info/exclude` rule covers it everywhere.
+fn store_of(source: &Path) -> PathBuf {
+    source.join(".codegraph")
+}
+
+fn cmd_index(source: &Path, repo: &str, full: bool) -> Result<()> {
+    let store_dir = store_of(source);
     let t = Instant::now();
     let existing = store_dir.join("CURRENT").exists();
     // One writer at a time: a watcher or a query syncing this store waits
@@ -505,10 +504,10 @@ fn git_note(source: &Path, store_dir: &Path, bootstrap: bool) -> String {
     note
 }
 
-fn cmd_watch(source: &Path, store: Option<PathBuf>, debounce_ms: u64) -> Result<()> {
+fn cmd_watch(source: &Path, debounce_ms: u64) -> Result<()> {
     use codegraph_resolve::{TreeWatcher, sync};
     use std::time::Duration;
-    let store_dir = store.unwrap_or_else(|| source.join(".codegraph"));
+    let store_dir = store_of(source);
     let policy = CompactPolicy::default();
     let stamp = || {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
@@ -825,21 +824,26 @@ fn cmd_affected(store: &Path, symbol: &str, depth: u32, limit: usize) -> Result<
     Ok(())
 }
 
-fn cmd_diff(source: &Path, store: Option<PathBuf>, repo: &str, depth: u32, limit: usize, fail_on_break: bool) -> Result<()> {
+fn cmd_diff(source: &Path, repo: &str, depth: u32, limit: usize, fail_on_break: bool) -> Result<()> {
     use codegraph_resolve::DiffOptions;
-    let store_dir = match store {
-        Some(s) => s,
-        None => {
-            // No store yet: there is nothing to diff against, so index now
-            // and say so; the next diff has a baseline.
-            let ensured = codegraph_resolve::ensure_current(source, repo, &CompactPolicy::default())?;
-            if ensured.located.fresh {
-                eprintln!("indexed {} into {}; nothing to compare against yet", source.display(), ensured.located.store_dir.display());
-                return Ok(());
-            }
-            ensured.located.store_dir
+    // The diff is against the last commit when git knows the tree, so the
+    // store's own state does not matter and is not synced here; without
+    // git it is against the store, which is then left exactly as it is.
+    // A tree with no store is indexed first: with git that is enough to
+    // diff right away; without, the next diff has a baseline.
+    let located = codegraph_resolve::locate(source)?;
+    if located.fresh {
+        let t = Instant::now();
+        let ensured = codegraph_resolve::ensure_current(source, repo, &CompactPolicy::default())?;
+        if let Some(r) = &ensured.report {
+            eprintln!("indexed {} in {:.1}s: {} files, {} symbols, {} edges (store: {})", source.display(), t.elapsed().as_secs_f64(), r.reextracted, r.symbols, r.edges, located.store_dir.display());
         }
-    };
+        if codegraph_resolve::detect_git(source).is_none() {
+            eprintln!("no git here: nothing to compare against until the next edit");
+            return Ok(());
+        }
+    }
+    let store_dir = located.store_dir;
     let t = Instant::now();
     let opts = DiffOptions { repo: repo.to_string(), depth, ..DiffOptions::default() };
     let r = codegraph_resolve::diff_tree(source, &store_dir, &opts)?;

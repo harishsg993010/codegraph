@@ -153,6 +153,44 @@ pub fn is_indexable(root: &Path, rel: &str) -> bool {
     wb.build().flatten().any(|e| e.path() == path)
 }
 
+/// Would the ignore rules exclude this path, whether or not it exists?
+/// The rules in every directory from the root down to the path's, deeper
+/// ones taking precedence, plus `.git/info/exclude` at the root. For a
+/// path that exists, [`is_indexable`] is the exact answer; this is for
+/// one that does not (deleted since the commit `diff` compares with).
+pub fn is_ignored(root: &Path, rel: &str) -> bool {
+    if Path::new(rel).components().any(|c| SKIP_DIRS.contains(&c.as_os_str().to_string_lossy().as_ref())) {
+        return true;
+    }
+    let mut b = ignore::gitignore::GitignoreBuilder::new(root);
+    let exclude = root.join(".git").join("info").join("exclude");
+    if exclude.is_file() {
+        b.add(exclude);
+    }
+    let mut dir = root.to_path_buf();
+    let parts: Vec<&str> = rel.split('/').collect();
+    for (i, part) in parts.iter().enumerate() {
+        for name in [".gitignore", ".ignore", IGNORE_FILE] {
+            let f = dir.join(name);
+            if f.is_file() {
+                b.add(f);
+            }
+        }
+        if i + 1 < parts.len() {
+            dir.push(part);
+        }
+    }
+    let Ok(g) = b.build() else { return false };
+    g.matched_path_or_any_parents(rel, false).is_ignore()
+}
+
+/// The content of `rel` at `HEAD`, or `None` when the commit has no such
+/// file (untracked, or added since).
+pub fn git_show_head(root: &Path, repo: &GitRepo, rel: &str) -> Option<Vec<u8>> {
+    let spec = format!("HEAD:{}{}", repo.prefix, rel);
+    git_output(root, &["show", &spec])
+}
+
 /// Is this the name of a file whose change alters what the scan returns?
 pub fn is_ignore_file(rel: &str) -> bool {
     let name = rel.rsplit('/').next().unwrap_or(rel);
@@ -414,6 +452,18 @@ mod tests {
         assert!(!is_indexable(d.path(), "fixtures/c.py"));
         assert!(!is_indexable(d.path(), "sub/skip_me.py"));
         assert!(!is_indexable(d.path(), "missing.py"));
+    }
+
+    #[test]
+    fn is_ignored_answers_for_paths_that_do_not_exist() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), ".codegraphignore", "gen/\n");
+        write(d.path(), "sub/.gitignore", "*.skip.py\n");
+        assert!(is_ignored(d.path(), "gen/anything.py"));
+        assert!(is_ignored(d.path(), "sub/a.skip.py"));
+        assert!(!is_ignored(d.path(), "sub/a.py"));
+        assert!(!is_ignored(d.path(), "a.py"));
+        assert!(is_ignored(d.path(), "node_modules/x.js"));
     }
 
     #[test]
