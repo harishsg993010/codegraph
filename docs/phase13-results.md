@@ -77,8 +77,8 @@ path from a source function to a sink function — and a library stub is a
 sink there too, now that calls to library functions are edges.
 
 `languages` and `paths` are tests on the symbol's **file**: a parameter is
-judged like its owner (no name index holds parameters; they are found by
-a scan, once per rule), a library stub by the file that first mentioned
+judged like its owner (parameters are found by a scan of parameter rows,
+once per rule), a library stub by the file that first mentioned
 it — `subprocess.Popen` is Python's because a Python file called it — and
 a stub with no file at all passes. `pattern-not` names symbols a pattern
 picked up that are not meant; `--exclude PATH` on the command line adds
@@ -94,6 +94,14 @@ names). The same principle holds elsewhere: `deep` takes `--hops`,
 `--seeds`, `--reach-limit` (or `hops:N` etc. in the query), `diff` takes
 `--depth`, `--max-fanout`, `--max-impact`, `affected` `--depth`, `path`
 `--max-hops`. No search bound is only a constant.
+
+**Parameters are in the name index** (index format 3; an older index is
+rebuilt on open). `deep request` credits every function with a parameter
+so called and returns the parameters themselves under `kind:parameter`;
+`explain handle.request` resolves the qualified form. Plain `search` and
+the bare-name lookups still leave parameters out — thirty thousand
+`ctx`s are one callable's business each — so `search request` answers as
+before.
 
 What a rule cannot say, because the analysis does not do it: a pattern
 over the text of an expression (`$X = request.args[...]`), a

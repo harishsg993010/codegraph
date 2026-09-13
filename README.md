@@ -312,7 +312,8 @@ the rest is fundamental.
   rebuilds the store in full (≈ 20 s on Gitea) rather than write a delta
   that large.
 - **Deep search** matches what the graph holds — names, paths, locals,
-  parameters, callees, referenced variables, branch predicates — not
+  parameters (by name, `kind:parameter` to list them), callees,
+  referenced variables, branch predicates — not
   string literals or comments; spreading is two hops and never through a
   hub or a library stub.
 

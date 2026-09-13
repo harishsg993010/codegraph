@@ -195,6 +195,14 @@ impl<I: IndexQuery> Engine<I> {
     /// As [`Self::by_name`], including external callee stubs — what a sink
     /// matcher wants, since most sinks are library calls.
     pub fn by_name_with_stubs(&self, name: &str) -> Vec<LocalId> {
+        self.by_exact_name_any(name).into_iter().filter(|id| !self.is_parameter(*id)).collect()
+    }
+
+    /// Every canonical row with exactly this name: stubs, locals and
+    /// parameters included. Parameters are one callable's business and
+    /// are left out of the other lookups; `deep` and the qualified form
+    /// `handle.request` want them.
+    pub fn by_exact_name_any(&self, name: &str) -> Vec<LocalId> {
         let view = self.view();
         self.index
             .by_exact_name(&name.trim().trim_end_matches("()").to_lowercase())
@@ -202,6 +210,11 @@ impl<I: IndexQuery> Engine<I> {
             .map(LocalId::new)
             .filter(|id| view.is_canonical(*id))
             .collect()
+    }
+
+    /// Is this row a parameter?
+    pub fn is_parameter(&self, id: LocalId) -> bool {
+        self.view().kind_raw(id).is_ok_and(|k| k == codegraph_core::SymbolKind::Parameter.as_u8())
     }
 
     /// Symbols by bare or qualified name, stubs included: `Command`, or
@@ -223,7 +236,7 @@ impl<I: IndexQuery> Engine<I> {
         };
         let own = RelationMask::of(&[Relation::Contains, Relation::Method]);
         let mut out = Vec::new();
-        for id in self.by_name_with_stubs(member) {
+        for id in self.by_exact_name_any(member) {
             let Ok(edges) = view.in_edges(id, own) else { continue };
             for e in edges {
                 let Ok(n) = view.name(e.node) else { continue };
@@ -243,7 +256,7 @@ impl<I: IndexQuery> Engine<I> {
             .by_name_prefix(&prefix.trim().to_lowercase())
             .into_iter()
             .map(LocalId::new)
-            .filter(|id| view.is_canonical(*id) && !self.is_stub(*id))
+            .filter(|id| view.is_canonical(*id) && !self.is_stub(*id) && !self.is_parameter(*id))
             .collect()
     }
 
@@ -305,12 +318,20 @@ impl<I: IndexQuery> Engine<I> {
     /// produce a trigram falls back to a full scan rather than returning
     /// nothing.
     pub fn search(&self, needle: &str) -> Result<Vec<LocalId>> {
+        self.search_with(needle, false)
+    }
+
+    /// [`Self::search`], with parameters among the results when asked.
+    pub fn search_with(&self, needle: &str, parameters: bool) -> Result<Vec<LocalId>> {
         let view = self.view();
         let needle = needle.to_lowercase();
         if needle.is_empty() {
             return Ok(Vec::new());
         }
         let matches = |id: LocalId| -> Result<bool> {
+            if !parameters && view.kind_raw(id)? == codegraph_core::SymbolKind::Parameter.as_u8() {
+                return Ok(false);
+            }
             Ok(view.norm_name(id)?.contains(&needle)
                 || view.path(id)?.to_lowercase().contains(&needle))
         };

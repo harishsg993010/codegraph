@@ -311,7 +311,7 @@ impl<I: IndexQuery> Engine<I> {
                 // A phrase: every word in the name or path, in some spelling.
                 let words: Vec<&str> = term.split(' ').collect();
                 let mut v = Vec::new();
-                for id in self.search(first)? {
+                for id in self.search_with(first, true)? {
                     let text = format!("{} {}", view.norm_name(id)?, view.path(id)?.to_lowercase());
                     if words.iter().all(|w| text.contains(w)) {
                         v.push(id);
@@ -319,9 +319,9 @@ impl<I: IndexQuery> Engine<I> {
                 }
                 v
             } else if term.chars().count() >= 3 {
-                self.search(term)?
+                self.search_with(term, true)?
             } else {
-                let mut v = self.by_name_with_stubs(term);
+                let mut v = self.by_exact_name_any(term);
                 v.extend(self.by_prefix(term));
                 v
             };

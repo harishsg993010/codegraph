@@ -42,7 +42,7 @@ use codegraph_core::{LocalId, Relation, RelationMask, SymbolKey};
 use codegraph_store::{Result as StoreResult, Store, StoreError};
 use zerocopy::IntoBytes;
 
-use crate::build::{REACHABILITY_RELATIONS, is_structural, trigrams};
+use crate::build::{REACHABILITY_RELATIONS, trigrams};
 use crate::persist::{
     self, BYTE_ORDER_MARK, FORMAT_VERSION, Header, IndexFileError, MAGIC, kind,
 };
@@ -352,7 +352,7 @@ impl Overlay {
             let seg_kinds = seg.node_kinds()?;
             for l in 0..seg.node_count() {
                 let g = base_id + l as u32;
-                if !view.is_canonical(LocalId::new(g)) || is_structural(seg_kinds[l]) {
+                if !view.is_canonical(LocalId::new(g)) || is_structural_kind(seg_kinds[l]) {
                     continue;
                 }
                 let s = seg.string(norms[l]);

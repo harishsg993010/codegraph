@@ -134,3 +134,22 @@ fn a_phrase_matches_a_run_of_subwords() {
     assert!(names(&hits).iter().any(|n| n == "MAX_UPLOAD_BYTES"), "{:?}", names(&hits));
     assert!(run(&e, "\"bytes upload\"").iter().all(|h| h.info.name != "MAX_UPLOAD_BYTES"));
 }
+
+#[test]
+fn a_parameter_is_found_by_name_and_credits_its_function() {
+    let src = tree();
+    let (_s, e) = engine(src.path());
+    // `request` is only a parameter of handle_upload: the function scores
+    // for it, and the parameter itself is a result when asked for.
+    let hits = run(&e, "request");
+    let h = hit(&hits, "handle_upload");
+    assert!(h.reasons.iter().any(|r| r.contains("parameter `request`")), "{:?}", h.reasons);
+    let hits = run(&e, "request kind:parameter");
+    assert_eq!(names(&hits), ["request"]);
+    assert_eq!(hits[0].info.kind, SymbolKind::Parameter);
+    // Plain search still leaves parameters out; the qualified form finds one.
+    assert!(e.search("request").unwrap().iter().all(|id| !e.is_parameter(*id)));
+    let q = e.by_qualified_name("handle_upload.request");
+    assert_eq!(q.len(), 1);
+    assert!(e.is_parameter(q[0]));
+}

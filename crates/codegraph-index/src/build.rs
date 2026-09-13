@@ -73,8 +73,9 @@ pub const MIN_HUB_THRESHOLD: u32 = 50;
 pub const REACHABILITY_RELATIONS: RelationMask = Relation::TAINT;
 
 /// Rows that are structure rather than symbols: a callable's parameters and
-/// CFG blocks. They are never in the name tables, never hubs, and edges
-/// touching a block do not count towards anyone's degree.
+/// CFG blocks. They are never hubs, and edges touching a block do not count
+/// towards anyone's degree. Parameters are in the name tables (so
+/// `deep request` and `explain handle.request` find them); blocks are not.
 pub fn is_structural(kind: u8) -> bool {
     kind == codegraph_core::SymbolKind::Parameter.as_u8() || kind == codegraph_core::SymbolKind::Block.as_u8()
 }
@@ -189,7 +190,7 @@ impl IndexData {
             let seg_kinds = seg.node_kinds()?;
             for l in 0..seg.node_count() {
                 let g = base + l as u32;
-                if !view.is_canonical(codegraph_core::LocalId::new(g)) || is_structural(seg_kinds[l]) {
+                if !view.is_canonical(codegraph_core::LocalId::new(g)) || is_block(seg_kinds[l]) {
                     continue;
                 }
                 let s = seg.string(norms[l]);
@@ -200,7 +201,7 @@ impl IndexData {
                 text.push_str(s);
                 // NUL-separated so a trigram cannot straddle the name/path
                 // boundary and match something that appears in neither.
-                text.push(' ');
+                text.push('\0');
                 text.push_str(&seg.file_path(files[l]).to_lowercase());
                 for tri in trigrams(&text) {
                     by_trigram.entry(tri).or_default().push(g);

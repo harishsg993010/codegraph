@@ -28,7 +28,8 @@ pub const MAGIC_TAIL: [u8; 8] = *b"CGIDXEND";
 /// `base_generation`) and added the overlay sections. A version-1 file is
 /// refused and rebuilt; an index is derived data, so that costs a rebuild,
 /// never a store.
-pub const FORMAT_VERSION: u32 = 2;
+/// 3: parameters joined the name tables; an older index is rebuilt.
+pub const FORMAT_VERSION: u32 = 3;
 
 /// `segment_id` of an index that was not built over exactly one segment. Such
 /// an index answers for its generation but cannot serve as the base of an
