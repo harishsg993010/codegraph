@@ -132,39 +132,89 @@ fn enter_site(context: Option<&str>) -> Option<String> {
     (!r.is_empty()).then(|| r.to_string())
 }
 
-/// A stub's incoming flow edges, grouped by the call site they enter on.
-/// A stub like `Sprintf` has one edge per call in the corpus; grouping once
-/// makes each visit cost the edges of one call, not of every call.
+/// Incoming flow edges, grouped by the call site they enter on, computed
+/// once per node. A stub like `Sprintf`, or a corpus function every file
+/// calls, has one edge per call in the corpus; grouping makes a visit cost
+/// the edges of one call, not of every call. Sites are interned.
 #[derive(Default)]
-struct StubEdges {
-    by_stub: std::collections::HashMap<u32, Arrivals>,
+struct Arrivals {
+    by_node: std::collections::HashMap<u32, Grouped>,
+    sites: std::collections::HashMap<String, u32>,
 }
 
-/// Enter site -> `(source, leave site of that source)`.
-type Arrivals = std::collections::HashMap<Option<String>, Vec<(u32, Option<String>)>>;
+/// Enter site (interned; `None` = an edge that crosses no call) ->
+/// `(source, leave site of the edge)`.
+type Grouped = std::collections::HashMap<Option<u32>, Vec<(u32, Option<u32>)>>;
 
-impl StubEdges {
-    /// `(source, leave site of that source)` for every edge into `stub`
-    /// that enters on `site`.
+/// The leave site of external data: nothing enters on it.
+const EXTERNAL_SITE: u32 = u32::MAX;
+
+/// `(source, leave site, enter site)` of one edge into a node.
+type Arrival = (u32, Option<u32>, Option<u32>);
+
+impl Arrivals {
+    fn intern(&mut self, site: &str) -> u32 {
+        if site == "!" {
+            return EXTERNAL_SITE;
+        }
+        let n = self.sites.len() as u32;
+        *self.sites.entry(site.to_string()).or_insert(n)
+    }
+
+    fn group(&mut self, view: codegraph_store::View<'_>, node: LocalId) -> Result<&Grouped> {
+        if !self.by_node.contains_key(&node.get()) {
+            let mut groups = Grouped::new();
+            for e in view.in_edges(node, DATA_FLOW)? {
+                let enter = enter_site(e.context).map(|s| self.intern(&s));
+                let leave = leave_site(e.context).map(|s| self.intern(&s));
+                groups.entry(enter).or_default().push((e.node.get(), leave));
+            }
+            self.by_node.insert(node.get(), groups);
+        }
+        Ok(&self.by_node[&node.get()])
+    }
+
+    /// The edges into `node` a backward walk may take with `stack` as the
+    /// call sites it is inside (innermost last): every edge that crosses
+    /// no call, plus — when inside a call — the one that entered on that
+    /// site, or — when inside none — every entering edge, since a path may
+    /// begin inside a callee and leave it towards any caller.
     fn arrivals(
         &mut self,
         view: codegraph_store::View<'_>,
-        stub: LocalId,
-        site: Option<&str>,
-    ) -> Result<Vec<(u32, Option<String>)>> {
-        let groups = match self.by_stub.entry(stub.get()) {
-            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => {
-                let mut groups = Arrivals::new();
-                for e in view.in_edges(stub, DATA_FLOW)? {
-                    groups.entry(enter_site(e.context)).or_default().push((e.node.get(), leave_site(e.context)));
+        node: LocalId,
+        top: Option<Option<u32>>,
+    ) -> Result<Vec<Arrival>> {
+        let g = self.group(view, node)?;
+        let mut out = Vec::new();
+        match top {
+            // Inside a call: the internal edges, and the arguments of that call.
+            Some(Some(site)) => {
+                if let Some(v) = g.get(&None) {
+                    out.extend(v.iter().map(|(u, l)| (*u, *l, None)));
                 }
-                v.insert(groups)
+                if let Some(v) = g.get(&Some(site)) {
+                    out.extend(v.iter().map(|(u, l)| (*u, *l, Some(site))));
+                }
             }
-        };
-        Ok(groups.get(&site.map(str::to_string)).cloned().unwrap_or_default())
+            // Inside external data: nothing came in.
+            Some(None) => {}
+            // Inside nothing: everything.
+            None => {
+                for (enter, v) in g {
+                    out.extend(v.iter().map(|(u, l)| (*u, *l, *enter)));
+                }
+            }
+        }
+        Ok(out)
     }
 }
+
+/// How many call sites a path may be inside at once before the oldest is
+/// forgotten. Forgetting is the sound direction: an unmatched return may
+/// then leave towards any caller, as a path that began inside a callee
+/// always could.
+const CONTEXT_DEPTH: usize = 6;
 
 fn can_carry_taint(kind: codegraph_core::SymbolKind) -> bool {
     !matches!(
@@ -282,11 +332,11 @@ impl<'a, I: IndexQuery> Security<'a, I> {
             // whose value reaches it. Searching forward from each source
             // would walk the same flow graph once per source.
             let source_set: std::collections::HashSet<u32> = sources.iter().map(|l| l.get()).collect();
-            let mut stubs = StubEdges::default();
+            let mut arrivals = Arrivals::default();
             'sinks: for &sink in &sinks {
                 // The labels do not cover value flow; every sink is searched.
                 searched += 1;
-                let paths = self.value_paths_into(sink, &source_set, &sanitizers, spec.max_hops, &mut stubs)?;
+                let paths = self.value_paths_into(sink, &source_set, &sanitizers, spec.max_hops, &mut arrivals)?;
                 for (src, path) in paths {
                     if findings.len() >= max_findings {
                         break 'sinks;
@@ -480,20 +530,25 @@ impl<'a, I: IndexQuery> Security<'a, I> {
     /// `flows_to`, with one path each, avoiding sanitisers. One backward
     /// search from the sink.
     ///
-    /// One external stub serves every caller, so walking through it naively
-    /// would join every caller's inputs to every caller's outputs. The edges
-    /// into and out of a stub carry their call site instead, as
-    /// `"<leave>><enter>"`, and a path leaves a stub only along the call
-    /// site it entered on: `y = decode(x)` connects `x` to `y`, and nothing
-    /// else. Walking backwards, that reads: having come *out* of a stub on
-    /// site `s`, go back *into* it only along an edge that entered on `s`.
+    /// **Context-sensitive.** Every edge into a callee's parameter carries
+    /// the call site it enters on, and every edge out of a callee's return
+    /// the site it leaves on; the same for a library stub, whose "body" is
+    /// nothing. The walk keeps the sites it is inside as a stack: leaving a
+    /// callee backwards (through its return) pushes the site, and entering
+    /// it backwards (through an argument) must pop the same one — matched
+    /// like parentheses, so a value that entered `id` from `a` leaves `id`
+    /// into `a` and never into `b`. A path that begins inside a callee has
+    /// an empty stack and may leave towards any caller, which is the sound
+    /// reading of "the sink is reachable from this parameter". External
+    /// data leaves a stub on a site nothing enters on, so a library read
+    /// is a source and never a conduit.
     fn value_paths_into(
         &self,
         sink: LocalId,
         sources: &std::collections::HashSet<u32>,
         sanitizers: &[LocalId],
         max_hops: u32,
-        stubs: &mut StubEdges,
+        arrivals: &mut Arrivals,
     ) -> Result<Vec<(LocalId, Vec<LocalId>)>> {
         use std::collections::{HashMap, VecDeque};
         let blocked: std::collections::HashSet<u32> = sanitizers.iter().map(|l| l.get()).collect();
@@ -501,11 +556,10 @@ impl<'a, I: IndexQuery> Security<'a, I> {
             return Ok(Vec::new());
         }
         let view = self.engine.store().view();
-        // State: (node, the call site the forward path entered this stub on;
-        // `None` for a non-stub, and for the sink itself, which is entered
-        // on any site).
-        type State = (u32, Option<String>);
-        let start: State = (sink.get(), None);
+        // State: (node, the call sites the forward path is inside, innermost
+        // last; `EXTERNAL_SITE` on top means "inside external data").
+        type State = (u32, Vec<u32>);
+        let start: State = (sink.get(), Vec::new());
         // Child pointers, towards the sink: state -> the state after it on
         // the forward path.
         let mut next: HashMap<State, State> = HashMap::new();
@@ -518,22 +572,22 @@ impl<'a, I: IndexQuery> Security<'a, I> {
                 continue;
             }
             let node = LocalId::new(state.0);
-            let at_stub = self.engine.is_stub(node) && node != sink;
-            // The edges into this node a forward path could have arrived
-            // by: for a stub, only those entering on the site it left on.
-            let arrivals: Vec<(u32, Option<String>)> = if at_stub {
-                stubs.arrivals(view, node, state.1.as_deref())?
-            } else {
-                view.in_edges(node, DATA_FLOW)?
-                    .into_iter()
-                    .map(|e| (e.node.get(), leave_site(e.context)))
-                    .collect()
-            };
-            for (u, leave) in arrivals {
-                // The state the forward path was in at `u`: a stub's entry
-                // site is the site it then left on.
-                let prev_site = if self.engine.is_stub(LocalId::new(u)) { leave } else { None };
-                let prev: State = (u, prev_site);
+            let top = state.1.last().map(|&s| (s != EXTERNAL_SITE).then_some(s));
+            for (u, leave, enter) in arrivals.arrivals(view, node, top)? {
+                // Backwards over `u -> v`: `enter` says the forward step went
+                // into a callee — we are leaving it, so pop its site; `leave`
+                // says it came out of one — we are entering it, so push.
+                let mut stack = state.1.clone();
+                if enter.is_some() && !stack.is_empty() {
+                    stack.pop();
+                }
+                if let Some(l) = leave {
+                    if stack.len() >= CONTEXT_DEPTH {
+                        stack.remove(0);
+                    }
+                    stack.push(l);
+                }
+                let prev: State = (u, stack);
                 if next.contains_key(&prev) {
                     continue;
                 }

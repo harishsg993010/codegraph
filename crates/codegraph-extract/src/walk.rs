@@ -160,6 +160,11 @@ pub struct RawFlow {
     pub source: FlowNode,
     pub sink: FlowNode,
     pub line: u32,
+    /// For a local flow: the definition lines involved — the one
+    /// definition for `origin -> local` (also `line`), and every definition
+    /// of the local that reaches the sink for `local -> sink`, as
+    /// `"12,15"`. What makes the stored local view flow-sensitive.
+    pub context: Option<String>,
 }
 
 /// A body reads or writes a non-local name.

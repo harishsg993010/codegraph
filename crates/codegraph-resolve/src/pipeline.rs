@@ -81,6 +81,13 @@ pub fn extract_all(root: &Path, files: &[PathBuf]) -> Vec<FileExtract> {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
+    // The user's library summaries, from `<root>/.codegraph-summaries.json`
+    // when there is one. A malformed file is said so, once, and ignored:
+    // extraction must not fail on a side file.
+    if let Err(e) = codegraph_extract::summaries::load_user_summaries(root) {
+        eprintln!("warning: {e}");
+    }
+
     thread_local! {
         static WALKERS: RefCell<HashMap<&'static str, Walker>> =
             RefCell::new(HashMap::new());

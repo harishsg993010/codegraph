@@ -759,8 +759,8 @@ function f(c, a, b) {
     check(&f, "javascript", "f", "a", "sink", true);
 }
 
-/// Nothing is pruned on what the tables do not decide: a call in the
-/// condition, two variables compared, a field.
+/// Nothing is pruned on what the tables do not decide: an arbitrary call
+/// in the condition, arithmetic, a field of a non-local.
 #[test]
 fn undecidable_conditions_prune_nothing() {
     let py = r#"
@@ -771,9 +771,9 @@ def f(c, d, a, b):
     if not check(c):
         sink(x)
     y = a
-    if c == d:
+    if c == d + 1:
         y = b
-    if c != d:
+    if c != d + 1:
         sink2(y)
 "#;
     let f = extract("python", "u.py", py);
@@ -794,4 +794,132 @@ function f(a, b) {
     let f = extract("javascript", "l.js", js);
     check(&f, "javascript", "f", "a", "sink", true);
     check(&f, "javascript", "f", "b", "sink", false);
+}
+
+/// Two subjects against each other: `a == b` then `a != b` with no
+/// definition between cannot both hold; `a < b` … `a >= b` likewise. A
+/// comparison of two variables used to establish nothing.
+#[test]
+fn two_subjects_compared_are_an_atom() {
+    let py = r#"
+def rel(a, b, t, u):
+    x = u
+    if a == b:
+        x = t
+    if a != b:
+        sink(x)
+    y = u
+    if a < b:
+        y = t
+    if a >= b:
+        sink2(y)
+    z = u
+    if a < b:
+        z = t
+    if a <= b:
+        sink3(z)
+"#;
+    let f = extract("python", "rel.py", py);
+    check(&f, "python", "rel", "t", "sink", false);
+    check(&f, "python", "rel", "u", "sink", true);
+    check(&f, "python", "rel", "t", "sink2", false);
+    check(&f, "python", "rel", "u", "sink2", true);
+    // `a < b` and `a <= b` agree: nothing pruned.
+    check(&f, "python", "rel", "t", "sink3", true);
+    let go = r#"
+package p
+
+func rel(a int, b int, t int, u int) {
+	x := u
+	if a == b {
+		x = t
+	}
+	if a != b {
+		sink(x)
+	}
+}
+"#;
+    let f = extract("go", "rel.go", go);
+    check(&f, "go", "rel", "t", "sink", false);
+    check(&f, "go", "rel", "u", "sink", true);
+}
+
+/// A pure predicate on a local is a subject: `s.isEmpty()` then
+/// `!s.isEmpty()`; `len(x) > 0` then `len(x) == 0`. An arbitrary call is
+/// not.
+#[test]
+fn pure_predicates_are_subjects_and_other_calls_are_not() {
+    let java = r#"
+class P {
+  void f(String s, String t, String u) {
+    String x = u;
+    if (s.isEmpty()) { x = t; }
+    if (!s.isEmpty()) { sink(x); }
+    String y = u;
+    if (s.startsWith("a")) { y = t; }
+    if (!s.startsWith("a")) { sink2(y); }
+    String z = u;
+    if (compute(s)) { z = t; }
+    if (!compute(s)) { sink3(z); }
+  }
+}
+"#;
+    let f = extract("java", "P.java", java);
+    check(&f, "java", "f", "t", "sink", false);
+    check(&f, "java", "f", "u", "sink", true);
+    check(&f, "java", "f", "t", "sink2", false);
+    // `compute` may return anything each time: no atom, nothing pruned.
+    check(&f, "java", "f", "t", "sink3", true);
+
+    // Go: `len(x) > 0` and `len(x) == 0` are intervals over one term.
+    let go = r#"
+package p
+
+func g(items []int, t int, u int) {
+	x := u
+	if len(items) > 0 {
+		x = t
+	}
+	if len(items) == 0 {
+		sink(x)
+	}
+}
+"#;
+    let f = extract("go", "g.go", go);
+    check(&f, "go", "g", "t", "sink", false);
+    check(&f, "go", "g", "u", "sink", true);
+}
+
+/// Three atoms that contradict where no pair does.
+#[test]
+fn three_atom_intervals_are_decided_exactly() {
+    let go = r#"
+package p
+
+func h(n int, t int, u int) {
+	x := u
+	if n >= 7 {
+		if n <= 7 {
+			x = t
+		}
+	}
+	if n != 7 {
+		sink(x)
+	}
+	y := u
+	if n >= 7 {
+		if n <= 8 {
+			y = t
+		}
+	}
+	if n != 7 {
+		sink2(y)
+	}
+}
+"#;
+    let f = extract("go", "h.go", go);
+    check(&f, "go", "h", "t", "sink", false);
+    check(&f, "go", "h", "u", "sink", true);
+    // n could be 8: not pruned.
+    check(&f, "go", "h", "t", "sink2", true);
 }

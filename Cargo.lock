@@ -223,6 +223,7 @@ dependencies = [
  "blake3",
  "codegraph-core",
  "rayon",
+ "serde_json",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",

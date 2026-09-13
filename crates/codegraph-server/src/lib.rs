@@ -129,8 +129,9 @@ pub struct AuditArgs {
     pub limit: usize,
     /// "callgraph" (default): a finding is a call path from a source function
     /// to a sink function. "dataflow": a finding is a value from a source
-    /// reaching a sink's argument — flow- and predicate-sensitive inside a
-    /// function, context-insensitive across calls, no alias analysis.
+    /// reaching a sink's argument — flow-, field- and predicate-sensitive
+    /// inside a function, call-site-matched across calls, may-alias by copy
+    /// and address.
     #[serde(default = "callgraph")]
     pub mode: String,
 }
@@ -450,9 +451,9 @@ impl CodeGraph {
         if dataflow {
             out.push_str(
                 "mode: dataflow. A finding is a value from a source reaching a sink's argument: \
-                 flow- and predicate-sensitive within a function, context-insensitive across \
-                 calls, no alias analysis. Missing edges (unresolved calls, reflection) mean \
-                 missing findings.\n",
+                 flow-, field- and predicate-sensitive within a function, call-site-matched \
+                 across calls, may-alias by copy and address, library calls by summary. \
+                 Missing edges (unresolved calls, reflection) mean missing findings.\n",
             );
         }
         for spec in presets::all() {

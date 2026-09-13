@@ -126,14 +126,22 @@ enum Lit {
     Other(String),
 }
 
-/// One decidable fact about a local, as a branch establishes it.
+/// One decidable fact, as a branch establishes it.
 ///
-/// The set is deliberately small: only atoms the analysis can decide
-/// without knowing anything about the program beyond the literal in the
-/// source. A condition that is not one of these — a call, a field, a
-/// comparison of two variables — contributes nothing, and nothing is ever
-/// pruned on it. Truthiness is never related to equality: `v == 0` and `v`
-/// are independent atoms, because what is truthy is the language's business.
+/// A *subject* is a local (`x`), or a **pure term** over locals whose
+/// value cannot change without a definition of a local in it: `len(x)`,
+/// `s.isEmpty()`, `name.startsWith("a")` — a call from a fixed list of
+/// side-effect-free predicates, on a local, with literal arguments. Two
+/// occurrences of the same text are the same value until a local in the
+/// text is defined, which is exactly the rule for a plain local.
+///
+/// The set is decidable without knowing anything beyond the source: a
+/// subject against a literal, a subject against a subject, a subject's
+/// truth, a subject's nullness. A condition that is none of these — an
+/// arbitrary call, a field of a non-local, arithmetic — contributes
+/// nothing, and nothing is ever pruned on it. Truthiness is never related
+/// to equality: `v == 0` and `v` are independent atoms, because what is
+/// truthy is the language's business.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Atom {
     Truthy(String),
@@ -146,18 +154,40 @@ enum Atom {
     Ge(String, i64),
     Null(String),
     NotNull(String),
+    /// `a == b`, `a != b` between two subjects; the pair is ordered.
+    EqVar(String, String),
+    NeVar(String, String),
+    /// `a < b`, `a <= b`; `a > b` is `LtVar(b, a)`.
+    LtVar(String, String),
+    LeVar(String, String),
     /// A literal `false` condition: the edge cannot be taken.
     Never,
 }
 
 impl Atom {
+    /// The subject of a unary atom.
     fn var(&self) -> Option<&str> {
         match self {
             Atom::Truthy(v) | Atom::Falsy(v) | Atom::Eq(v, _) | Atom::Ne(v, _) => Some(v),
             Atom::Lt(v, _) | Atom::Le(v, _) | Atom::Gt(v, _) | Atom::Ge(v, _) => Some(v),
             Atom::Null(v) | Atom::NotNull(v) => Some(v),
-            Atom::Never => None,
+            Atom::EqVar(..) | Atom::NeVar(..) | Atom::LtVar(..) | Atom::LeVar(..) | Atom::Never => None,
         }
+    }
+
+    /// Every subject the atom speaks about.
+    fn subjects(&self) -> Vec<&str> {
+        match self {
+            Atom::EqVar(a, b) | Atom::NeVar(a, b) | Atom::LtVar(a, b) | Atom::LeVar(a, b) => vec![a, b],
+            other => other.var().into_iter().collect(),
+        }
+    }
+
+    fn eq_var(a: String, b: String) -> Atom {
+        if a <= b { Atom::EqVar(a, b) } else { Atom::EqVar(b, a) }
+    }
+    fn ne_var(a: String, b: String) -> Atom {
+        if a <= b { Atom::NeVar(a, b) } else { Atom::NeVar(b, a) }
     }
 
     /// The atom the other branch establishes. `Never`'s negation is "no
@@ -174,10 +204,30 @@ impl Atom {
             Atom::Ge(v, n) => Atom::Lt(v.clone(), *n),
             Atom::Null(v) => Atom::NotNull(v.clone()),
             Atom::NotNull(v) => Atom::Null(v.clone()),
+            Atom::EqVar(a, b) => Atom::NeVar(a.clone(), b.clone()),
+            Atom::NeVar(a, b) => Atom::EqVar(a.clone(), b.clone()),
+            Atom::LtVar(a, b) => Atom::LeVar(b.clone(), a.clone()),
+            Atom::LeVar(a, b) => Atom::LtVar(b.clone(), a.clone()),
             Atom::Never => return None,
         })
     }
 }
+
+/// Side-effect-free predicates: a call to one of these on a local, with
+/// literal arguments, is a pure term whose value changes only when the
+/// local does. Every name here computes a boolean or a size from its
+/// receiver or argument and writes nothing.
+const PURE_PREDICATES: &[&str] = &[
+    "len", "Len", "length", "size", "count", "Count", "cap",
+    "is_empty", "isEmpty", "empty?", "nil?", "none?", "any?", "present?", "blank?", "IsZero",
+    "is_some", "is_none", "is_ok", "is_err", "isPresent", "isNaN", "isFinite",
+    "isdigit", "isalpha", "isalnum", "isspace", "isnumeric", "isDigit", "isupper", "islower",
+    "contains", "Contains", "containsKey", "includes", "include?", "has", "Has", "hasOwnProperty", "has_key", "has_key?", "key?",
+    "startsWith", "startswith", "StartsWith", "starts_with", "start_with?", "HasPrefix",
+    "endsWith", "endswith", "EndsWith", "ends_with", "end_with?", "HasSuffix",
+    "equals", "Equals", "equalsIgnoreCase", "eq", "eql?", "equal?", "matches", "match?", "test",
+    "isinstance", "hasattr", "callable", "bool", "exists?", "is_a?", "kind_of?", "instance_of?", "respond_to?", "frozen?",
+];
 
 /// The most atoms one definition carries. Past this, new atoms are not
 /// added — fewer assumptions is the sound direction.
@@ -206,12 +256,28 @@ fn contradictory(atoms: &[Atom]) -> bool {
             }
         }
     }
-    // Integer intervals: the bounds every atom about one variable imposes.
-    let mut vars: Vec<&str> = atoms.iter().filter_map(Atom::var).collect();
-    vars.sort_unstable();
-    vars.dedup();
-    for v in vars {
-        let (mut lo, mut hi) = (i64::MIN, i64::MAX);
+    // Two subjects against each other.
+    for (i, a) in atoms.iter().enumerate() {
+        for b in &atoms[i + 1..] {
+            let clash = match (a, b) {
+                (Atom::EqVar(x, y), Atom::NeVar(p, q)) | (Atom::NeVar(x, y), Atom::EqVar(p, q)) => x == p && y == q,
+                // `a < b` with `b <= a`, `b < a`, or `a == b`.
+                (Atom::LtVar(x, y), Atom::LeVar(p, q)) | (Atom::LeVar(p, q), Atom::LtVar(x, y)) => x == q && y == p,
+                (Atom::LtVar(x, y), Atom::LtVar(p, q)) => x == q && y == p,
+                (Atom::LtVar(x, y), Atom::EqVar(p, q)) | (Atom::EqVar(p, q), Atom::LtVar(x, y)) => {
+                    (x == p && y == q) || (x == q && y == p)
+                }
+                _ => false,
+            };
+            if clash {
+                return true;
+            }
+        }
+    }
+    // Integer intervals: the bounds every atom about one subject imposes —
+    // and, for `a == b`, on both at once.
+    let interval = |v: &str| -> (i64, i64, Vec<i64>) {
+        let (mut lo, mut hi, mut ne) = (i64::MIN, i64::MAX, Vec::new());
         for a in atoms {
             if a.var() != Some(v) {
                 continue;
@@ -225,15 +291,41 @@ fn contradictory(atoms: &[Atom]) -> bool {
                     lo = lo.max(*n);
                     hi = hi.min(*n);
                 }
+                Atom::Ne(_, Lit::Int(n)) => ne.push(*n),
                 _ => {}
             }
         }
-        if lo > hi {
+        (lo, hi, ne)
+    };
+    let mut vars: Vec<&str> = atoms.iter().flat_map(Atom::subjects).collect();
+    vars.sort_unstable();
+    vars.dedup();
+    let empty = |lo: i64, hi: i64, ne: &[i64]| lo > hi || (lo == hi && ne.contains(&lo));
+    for v in &vars {
+        let (lo, hi, ne) = interval(v);
+        if empty(lo, hi, &ne) {
             return true;
         }
-        // `v != n` with the interval pinned to exactly `n`.
-        if lo == hi && atoms.iter().any(|a| matches!(a, Atom::Ne(w, Lit::Int(n)) if w == v && *n == lo)) {
-            return true;
+    }
+    for a in atoms {
+        if let Atom::EqVar(x, y) = a {
+            let (lx, hx, mut nx) = interval(x);
+            let (ly, hy, ny) = interval(y);
+            nx.extend(ny);
+            if empty(lx.max(ly), hx.min(hy), &nx) {
+                return true;
+            }
+            // Equal subjects with different literal values.
+            let lit = |v: &str| atoms.iter().find_map(|a| match a {
+                Atom::Eq(w, l) if w == v => Some(l),
+                _ => None,
+            });
+            if let (Some(a), Some(b)) = (lit(x), lit(y))
+                && same_type(a, b)
+                && a != b
+            {
+                return true;
+            }
         }
     }
     false
@@ -321,6 +413,9 @@ struct Clashes {
     never: Vec<bool>,
     pair: Vec<bool>,
     k: usize,
+    /// The exact check's answers, per set: the same few sets recur across
+    /// every fact of a function.
+    exact: std::cell::RefCell<HashMap<Ids, bool>>,
 }
 
 impl Clashes {
@@ -335,9 +430,9 @@ impl Clashes {
                 }
             }
         }
-        Self { never: table.iter().map(|a| *a == Atom::Never).collect(), pair, k }
+        Self { never: table.iter().map(|a| *a == Atom::Never).collect(), pair, k, exact: Default::default() }
     }
-    fn contradictory(&self, ids: &Ids) -> bool {
+    fn contradictory(&self, ids: &Ids, table: &[Atom]) -> bool {
         let s = ids.as_slice();
         for (i, &a) in s.iter().enumerate() {
             if self.never[a as usize] {
@@ -348,6 +443,18 @@ impl Clashes {
                     return true;
                 }
             }
+        }
+        // Three or more atoms can contradict where no pair does
+        // (`v >= 7 ∧ v <= 7 ∧ v != 7`, `a == b ∧ a > 3 ∧ b < 2`): the exact
+        // check, on the few sets that get this far.
+        if s.len() >= 3 {
+            if let Some(&known) = self.exact.borrow().get(ids) {
+                return known;
+            }
+            let atoms: Vec<Atom> = s.iter().map(|&i| table[i as usize].clone()).collect();
+            let answer = contradictory(&atoms);
+            self.exact.borrow_mut().insert(*ids, answer);
+            return answer;
         }
         false
     }
@@ -423,6 +530,14 @@ struct Body<'a, 'o> {
     /// facts hold indices into it.
     atom_table: Vec<Atom>,
     atom_ids: HashMap<Atom, u32>,
+    /// Per atom: the locals its subjects are about — what a definition of
+    /// invalidates it. `len(x)` is about `x`.
+    atom_roots: Vec<Vec<String>>,
+    /// May-alias classes over locals, flow-insensitive: `p = &x`, `r = q`
+    /// where a copy shares the object. A write through one member of a
+    /// class (`*p = v`, `p.f = v`, `p.push(v)`) is a weak write to the
+    /// same path of every member; a read through one reads every member.
+    aliases: HashMap<String, Vec<String>>,
 }
 
 fn text<'a>(node: Node<'_>, source: &'a [u8]) -> &'a str {
@@ -488,6 +603,8 @@ pub(crate) fn analyse_body(
         no_atoms: HashSet::new(),
         atom_table: Vec::new(),
         atom_ids: HashMap::new(),
+        atom_roots: Vec::new(),
+        aliases: HashMap::new(),
     };
     b.locals.extend(named_results.iter().cloned());
 
@@ -496,6 +613,7 @@ pub(crate) fn analyse_body(
     // reaching definition and contributes nothing — correct, since nothing
     // flowed into it).
     b.collect_locals(body);
+    b.collect_aliases(body);
     b.forbid_atoms_written_elsewhere(body);
 
     let entry = b.new_block(line_of(body));
@@ -564,9 +682,227 @@ impl<'a, 'o> Body<'a, 'o> {
             return id;
         }
         let id = self.atom_table.len() as u32;
+        let mut roots: Vec<String> = a.subjects().iter().flat_map(|s| self.term_roots(s)).collect();
+        roots.sort();
+        roots.dedup();
+        self.atom_roots.push(roots);
         self.atom_table.push(a.clone());
         self.atom_ids.insert(a, id);
         id
+    }
+
+    /// The locals a term is about: every identifier in it that is one.
+    fn term_roots(&self, term: &str) -> Vec<String> {
+        term.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$' || c == '@'))
+            .filter(|t| !t.is_empty() && self.locals.contains(*t))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A pure term: a call to a side-effect-free predicate on a local (or
+    /// with a local as its one argument) and otherwise literal arguments.
+    /// Its text is its identity.
+    fn pure_term(&self, node: Node<'a>) -> Option<String> {
+        let node = self.unwrap_condition(node);
+        if !self.cfg.is_call(node.kind()) {
+            return None;
+        }
+        let (callee, _) = self.callee_of(node)?;
+        if !PURE_PREDICATES.contains(&callee.as_str()) {
+            return None;
+        }
+        // The receiver, if any, must be a local; every argument a literal
+        // or the one local (`len(x)`, `isinstance(x, T)`).
+        let target = node.child_by_field_name(self.cfg.callee_field).or_else(|| node.named_child(0))?;
+        let mut vars: Vec<String> = Vec::new();
+        if let Some(m) = self.syn.member(target.kind())
+            && let Some(o) = field(target, m.object_field)
+        {
+            vars.push(self.atom_var(o)?);
+        } else if let Some(r) = field(node, "receiver").or_else(|| field(node, "object")) {
+            vars.push(self.atom_var(r)?);
+        }
+        if let Some(args) = field(node, self.syn.args_field) {
+            for a in named_children(args) {
+                let a = match self.syn.keyword_arg {
+                    Some(k) if k.node == a.kind() => field(a, k.value_field).unwrap_or(a),
+                    _ => a,
+                };
+                if self.literal_of(a).is_some() || self.is_null_literal(a) {
+                    continue;
+                }
+                if let Some(v) = self.atom_var(a) {
+                    vars.push(v);
+                    continue;
+                }
+                // A type name in `isinstance(x, T)` is not a value.
+                if self.syn.is_var_ref(a.kind()) && !self.locals.contains(text(a, self.source)) {
+                    continue;
+                }
+                return None;
+            }
+        }
+        if vars.is_empty() {
+            return None;
+        }
+        let t: String = text(node, self.source).split_whitespace().collect::<Vec<_>>().join(" ");
+        Some(t)
+    }
+
+    /// A subject: a local, or a pure term over locals.
+    fn atom_subject(&self, node: Node<'a>) -> Option<String> {
+        self.atom_var(node).or_else(|| self.pure_term(node))
+    }
+
+    // --- fields and aliases ---
+
+    /// `a.b.c`, `a[i].b`, `*p` rooted at a variable: the root and the
+    /// path — `a.b.c`, `a[].b`, `p` — or none when the chain does not end
+    /// at a variable (a call result, a literal, `self`).
+    fn field_path(&self, node: Node<'a>) -> Option<(Node<'a>, String)> {
+        let kind = node.kind();
+        if self.syn.is_var_ref(kind) {
+            let t = text(node, self.source);
+            if self.syn.is_self(t) || self.receiver_var.as_deref() == Some(t) || kind == "self" || kind == "this" {
+                return None;
+            }
+            return Some((node, t.to_string()));
+        }
+        if let Some(m) = self.syn.member(kind) {
+            // Ruby: `a.b(args)` is a call, not a field.
+            if self.cfg.is_call(kind) && (field(node, self.syn.args_field).is_some() || field(node, "block").is_some()) {
+                return None;
+            }
+            let (o, mem) = (field(node, m.object_field)?, field(node, m.member_field)?);
+            let (root, path) = self.field_path(o)?;
+            return Some((root, format!("{path}.{}", text(mem, self.source))));
+        }
+        if let Some((_, obj_field)) = self.syn.subscript(kind) {
+            let o = if obj_field.is_empty() { node.named_child(0)? } else { field(node, obj_field)? };
+            let (root, path) = self.field_path(o)?;
+            return Some((root, format!("{path}[]")));
+        }
+        if self.syn.unwrap.contains(&kind) || self.is_deref(node) {
+            // `(a).b`, `*p` — the pointee is what `p` points at, read and
+            // written through `p`'s aliases.
+            return self.field_path(self.operand(node)?);
+        }
+        None
+    }
+
+    /// `*p`: a dereference, in the languages that have one (C, C++, Go,
+    /// Rust all spell it as a unary `*`).
+    fn is_deref(&self, node: Node<'a>) -> bool {
+        matches!(node.kind(), "pointer_expression" | "unary_expression") && text(node, self.source).starts_with('*')
+    }
+
+    /// The operand of `&x`, `&mut x`, `*p`: the named field where the
+    /// grammar has one, else the last named child (`&mut x` puts a
+    /// `mutable_specifier` first).
+    fn operand(&self, node: Node<'a>) -> Option<Node<'a>> {
+        field(node, "value")
+            .or_else(|| field(node, "argument"))
+            .or_else(|| field(node, "operand"))
+            .or_else(|| named_children(node).into_iter().last())
+    }
+
+    /// The other roots `path` may denote, by aliasing: `x.f` for `p.f` when
+    /// `p = &x` or `p = x` (an object shared by copy).
+    fn alias_paths(&self, path: &str) -> Vec<String> {
+        let root_len = path.find(['.', '[']).unwrap_or(path.len());
+        let (root, rest) = path.split_at(root_len);
+        self.aliases.get(root).map(|others| others.iter().map(|o| format!("{o}{rest}")).collect()).unwrap_or_default()
+    }
+
+    /// Flow-insensitive may-alias classes over the body's locals.
+    ///
+    /// `p = &x` (C, C++, Go, Rust, C#) makes `p` and `x` one class; so does
+    /// `a = b` in a language where a copy shares the object (Python, Ruby,
+    /// JavaScript, Java, C#, Go interfaces and slices): a write through
+    /// `a.f` is a write to `b.f`. Union-find, so `c = a` after `a = b` puts
+    /// all three together. Over-approximate — a class is "may", and a
+    /// write through one member weakly writes every member — which is the
+    /// sound direction.
+    fn collect_aliases(&mut self, body: Node<'a>) {
+        let by_copy = matches!(self.cfg.name, "python" | "ruby" | "javascript" | "typescript" | "tsx" | "java" | "csharp" | "go");
+        let mut parent: HashMap<String, String> = HashMap::new();
+        fn find(parent: &mut HashMap<String, String>, x: &str) -> String {
+            let p = parent.get(x).cloned().unwrap_or_else(|| x.to_string());
+            if p == x {
+                return p;
+            }
+            let r = find(parent, &p);
+            parent.insert(x.to_string(), r.clone());
+            r
+        }
+        let union = |parent: &mut HashMap<String, String>, a: &str, b: &str| {
+            let (ra, rb) = (find(parent, a), find(parent, b));
+            // Every member is a key, so the class can be listed later.
+            parent.entry(a.to_string()).or_insert_with(|| ra.clone());
+            parent.entry(b.to_string()).or_insert_with(|| rb.clone());
+            if ra != rb {
+                parent.insert(ra, rb);
+            }
+        };
+        let mut stack = vec![body];
+        while let Some(n) = stack.pop() {
+            if n.id() != body.id() && self.is_def_node(n) {
+                continue;
+            }
+            if let Some(a) = self.syn.assign(n.kind())
+                && let (Some(lhs), Some(rhs)) = (self.assign_left(n, a), self.assign_right(n, a))
+                && let [l] = self.binding_names(lhs).as_slice()
+            {
+                // One bound name (`p`, `char **p`, `let p`): a destructuring
+                // shares nothing whole.
+                let l = l.as_str();
+                let mut r = rhs;
+                // Go: `p := &x` wraps both sides in an `expression_list`.
+                if matches!(r.kind(), "expression_list" | "tuple") && r.named_child_count() == 1 {
+                    r = r.named_child(0).expect("one child");
+                }
+                // `&x`, `&mut x`, `ref x`: the pointee.
+                let mut addressed = false;
+                loop {
+                    let k = r.kind();
+                    if self.syn.unwrap.contains(&k) && !self.syn.by_ref_args.contains(&k) {
+                        match r.named_child(0) {
+                            Some(c) => r = c,
+                            None => break,
+                        }
+                    } else if self.syn.by_ref_args.contains(&k) && text(r, self.source).starts_with('&') {
+                        addressed = true;
+                        match self.operand(r) {
+                            Some(c) => r = c,
+                            None => break,
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                if self.syn.is_var_ref(r.kind()) {
+                    let rt = text(r, self.source);
+                    if self.locals.contains(l) && self.locals.contains(rt) && l != rt && (addressed || by_copy) {
+                        union(&mut parent, l, rt);
+                    }
+                }
+            }
+            stack.extend(named_children(n));
+        }
+        let names: Vec<String> = parent.keys().cloned().collect();
+        let mut classes: HashMap<String, Vec<String>> = HashMap::new();
+        for n in &names {
+            let r = find(&mut parent, n);
+            classes.entry(r).or_default().push(n.clone());
+        }
+        for members in classes.values() {
+            for m in members {
+                let others: Vec<String> = members.iter().filter(|o| *o != m).cloned().collect();
+                if !others.is_empty() {
+                    self.aliases.insert(m.clone(), others);
+                }
+            }
+        }
     }
 
     // --- predicate atoms ---
@@ -770,11 +1106,27 @@ impl<'a, 'o> Body<'a, 'o> {
             out.truncate(MAX_ATOMS);
             return out;
         }
-        // Comparisons against a literal.
+        // Comparisons: a subject against a literal, or two subjects.
         if let Some((l, op, r)) = self.comparison_parts(node) {
-            let (var, lit_node) = match (self.atom_var(l), self.atom_var(r)) {
+            let (var, lit_node) = match (self.atom_subject(l), self.atom_subject(r)) {
                 (Some(v), None) => (v, r),
                 (None, Some(v)) => (v, l),
+                (Some(a), Some(b)) => {
+                    let atom = match op.as_str() {
+                        "==" | "===" | "is" | "eq" => Some(Atom::eq_var(a, b)),
+                        "!=" | "!==" | "is not" | "ne" => Some(Atom::ne_var(a, b)),
+                        "<" => Some(Atom::LtVar(a, b)),
+                        "<=" => Some(Atom::LeVar(a, b)),
+                        ">" => Some(Atom::LtVar(b, a)),
+                        ">=" => Some(Atom::LeVar(b, a)),
+                        _ => None,
+                    };
+                    return match atom {
+                        Some(a) if positive => vec![a],
+                        Some(a) => a.negated().into_iter().collect(),
+                        None => Vec::new(),
+                    };
+                }
                 _ => return Vec::new(),
             };
             let flipped = lit_node.id() == l.id();
@@ -803,8 +1155,8 @@ impl<'a, 'o> Body<'a, 'o> {
                 None => Vec::new(),
             };
         }
-        // A bare local: its truthiness.
-        if let Some(v) = self.atom_var(node) {
+        // A bare local, or a pure predicate on one: its truthiness.
+        if let Some(v) = self.atom_subject(node) {
             return vec![if positive { Atom::Truthy(v) } else { Atom::Falsy(v) }];
         }
         Vec::new()
@@ -1528,9 +1880,10 @@ impl<'a, 'o> Body<'a, 'o> {
             // object. The graph has no by-reference return, so the value is
             // treated as returned: sound, and what lets `strcpy(buf, x)` in
             // a callee reach the caller's `buf`.
-            if weak
-                && let Target::Local(name) = &t
-                && self.params.iter().any(|(p, _)| p == name)
+            if let Target::Local(name) = &t
+                && let root = &name[..name.find(['.', '[']).unwrap_or(name.len())]
+                && self.params.iter().any(|(p, _)| p == root)
+                && (weak || root.len() < name.len())
             {
                 ops.push(Op::Return { sources: sources.clone(), line });
             }
@@ -1551,25 +1904,53 @@ impl<'a, 'o> Body<'a, 'o> {
         let mut stack = vec![(lhs, false)];
         while let Some((n, weak)) = stack.pop() {
             let kind = n.kind();
-            if let Some(m) = self.syn.member(kind) {
-                // `self.x = …` writes a field; `obj.x = …` mutates `obj`.
-                let obj = field(n, m.object_field);
-                let member = field(n, m.member_field);
-                match (obj, member) {
-                    (Some(o), Some(mem)) if self.is_self_node(o) => {
-                        out.push((Target::NonLocal(text(mem, self.source).to_string(), true), false));
-                    }
-                    (Some(o), _) => {
-                        for (t, _) in self.targets_of(o, _ops) {
-                            out.push((t, true));
+            let is_member = self.syn.member(kind).is_some();
+            let is_subscript = self.syn.subscript(kind).is_some();
+            let is_deref = self.is_deref(n);
+            if is_member || is_subscript || is_deref {
+                // `a.x = …`, `a[i] = …`, `*p = …`: a write to a *path* of a
+                // local — its own definition, field-sensitively — and, by
+                // aliasing, a weak write to the same path of every local
+                // that may share the object. `self.x = …` writes a field;
+                // `obj.x = …` on a non-local mutates `obj`, as before.
+                if let Some((root, path)) = self.field_path(n) {
+                    let rt = text(root, self.source);
+                    if self.locals.contains(rt) {
+                        let shared = self.aliases.contains_key(rt);
+                        if is_deref && path == rt {
+                            // `*p = v`: the pointee, not `p`.
+                            out.push((Target::Local(path.clone()), true));
+                        } else {
+                            out.push((Target::Local(path.clone()), weak || shared));
                         }
+                        for other in self.alias_paths(&path) {
+                            out.push((Target::Local(other), true));
+                        }
+                        continue;
                     }
-                    _ => {}
                 }
-                continue;
-            }
-            if let Some((_, obj_field)) = self.syn.subscript(kind) {
-                let obj = if obj_field.is_empty() { n.named_child(0) } else { field(n, obj_field) };
+                if let Some(m) = self.syn.member(kind) {
+                    let obj = field(n, m.object_field);
+                    let member = field(n, m.member_field);
+                    match (obj, member) {
+                        (Some(o), Some(mem)) if self.is_self_node(o) => {
+                            out.push((Target::NonLocal(text(mem, self.source).to_string(), true), false));
+                        }
+                        (Some(o), _) => {
+                            for (t, _) in self.targets_of(o, _ops) {
+                                out.push((t, true));
+                            }
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+                let obj = if is_deref {
+                    self.operand(n)
+                } else {
+                    let (_, obj_field) = self.syn.subscript(kind).expect("subscript");
+                    if obj_field.is_empty() { n.named_child(0) } else { field(n, obj_field) }
+                };
                 if let Some(o) = obj {
                     for (t, _) in self.targets_of(o, _ops) {
                         out.push((t, true));
@@ -1675,6 +2056,20 @@ impl<'a, 'o> Body<'a, 'o> {
                 self.scan_call(node, ops, out, in_closure);
                 return;
             }
+            // `a.b` on a local: the field's own value, field-sensitively
+            // (its definitions, plus whole-object definitions of `a`, which
+            // the reaching-definitions pass adds as a prefix), and the same
+            // path of every alias of `a`.
+            if let Some((root, path)) = self.field_path(node)
+                && self.locals.contains(text(root, self.source))
+            {
+                let mut names = vec![path.clone()];
+                names.extend(self.alias_paths(&path));
+                for n in names {
+                    out.push(if in_closure { Src::LocalAny(n) } else { Src::Local(n) });
+                }
+                return;
+            }
             match (obj, member) {
                 (Some(o), Some(mem)) if self.is_self_node(o) => {
                     out.push(Src::NonLocal(text(mem, self.source).to_string(), true));
@@ -1706,9 +2101,31 @@ impl<'a, 'o> Body<'a, 'o> {
             return;
         }
         if let Some((_, obj_field)) = self.syn.subscript(kind) {
+            if let Some((root, path)) = self.field_path(node)
+                && self.locals.contains(text(root, self.source))
+            {
+                let mut names = vec![path.clone()];
+                names.extend(self.alias_paths(&path));
+                for n in names {
+                    out.push(if in_closure { Src::LocalAny(n) } else { Src::Local(n) });
+                }
+                return;
+            }
             let obj = if obj_field.is_empty() { node.named_child(0) } else { field(node, obj_field) };
             if let Some(o) = obj {
                 self.leaves_into(o, ops, out, in_closure);
+            }
+            return;
+        }
+        // `*p`: what `p` points at — `p`'s own value and every alias's.
+        if self.is_deref(node)
+            && let Some((root, path)) = self.field_path(node)
+            && self.locals.contains(text(root, self.source))
+        {
+            let mut names = vec![path.clone()];
+            names.extend(self.alias_paths(&path));
+            for n in names {
+                out.push(if in_closure { Src::LocalAny(n) } else { Src::Local(n) });
             }
             return;
         }
@@ -1911,11 +2328,18 @@ impl<'a, 'o> Body<'a, 'o> {
                 for n in nodes {
                     // `&v`, `ref v`: the written thing is `v`.
                     let n = if self.syn.by_ref_args.contains(&n.kind()) && text(n, self.source).starts_with('&') {
-                        n.named_child(0).unwrap_or(n)
+                        self.operand(n).unwrap_or(n)
                     } else {
                         n
                     };
+                    // A write *through* the target: the object is written,
+                    // so every local sharing it is too.
                     for (t, _) in self.targets_of(n, ops) {
+                        if let Target::Local(name) = &t {
+                            for other in self.alias_paths(name) {
+                                summary_writes.push((Target::Local(other), sources.clone()));
+                            }
+                        }
                         summary_writes.push((t, sources.clone()));
                     }
                 }
@@ -1957,7 +2381,9 @@ impl<'a, 'o> Body<'a, 'o> {
         // through in languages with reference semantics; the resolver
         // cannot tell, and neither can this. Weak, so it costs nothing when
         // it does not happen.
-        if matches!(self.cfg.name, "c" | "cpp" | "go" | "rust" | "csharp") {
+        // A pure predicate (`len(x)`, `s.isEmpty()`) writes nothing, and a
+        // phantom write here would invalidate the very atoms it establishes.
+        if matches!(self.cfg.name, "c" | "cpp" | "go" | "rust" | "csharp") && !PURE_PREDICATES.contains(&callee.as_str()) {
             written.extend(passed_locals);
         }
         written.sort();
@@ -1969,7 +2395,11 @@ impl<'a, 'o> Body<'a, 'o> {
         // every argument of every call, which on a 2,000-statement function
         // measured as a million facts.
         for name in written {
-            // `&global` written through a call is a write to the global.
+            // `&global` written through a call is a write to the global; a
+            // local written through is written for every local sharing it.
+            for other in self.alias_paths(&name) {
+                ops.push(Op::Def { target: Target::Local(other), sources: vec![Src::CallResult(idx)], weak: true, line });
+            }
             let target = self.classify(&name, "identifier");
             ops.push(Op::Def { target, sources: vec![Src::CallResult(idx)], weak: true, line });
         }
@@ -2102,6 +2532,52 @@ impl<'a, 'o> Body<'a, 'o> {
         let bit = |v: &mut [u64], i: usize| v[i / 64] |= 1 << (i % 64);
         let has = |v: &[u64], i: usize| v[i / 64] & (1 << (i % 64)) != 0;
 
+        // Field paths. A definition of `a` is also, for a reader of `a.x`,
+        // a definition of `a.x` (the whole object was assigned); a
+        // definition of `a.x` is, for a reader of `a`, part of `a`. So a
+        // read of a path sees the definitions of the path, of every prefix,
+        // and of every extension; a strong definition of a path kills the
+        // path and its extensions, never its prefixes.
+        // Field-path definitions, indexed by every prefix they extend: for
+        // `a.b.c` the entries `a` and `a.b`. Most names have none, and the
+        // lookup is one hash probe.
+        let mut ext_defs: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (name, ids) in &defs_of_name {
+            for (i, ch) in name.char_indices() {
+                if ch == '.' || ch == '[' {
+                    ext_defs.entry(&name[..i]).or_default().extend(ids.iter().copied());
+                }
+            }
+        }
+        let extensions = |name: &str| -> &[usize] { ext_defs.get(name).map(Vec::as_slice).unwrap_or(&[]) };
+        let prefixes = |name: &str, out: &mut Vec<usize>| {
+            if !name.contains(['.', '[']) {
+                return;
+            }
+            for (i, ch) in name.char_indices() {
+                if (ch == '.' || ch == '[')
+                    && let Some(ids) = defs_of_name.get(&name[..i])
+                {
+                    out.extend(ids.iter().copied());
+                }
+            }
+        };
+        // Every definition a read of `name` may see: its own, its prefixes'
+        // (a whole-object assignment), its extensions' (a field written).
+        let family = |name: &str| -> Vec<usize> {
+            let mut out: Vec<usize> = defs_of_name.get(name).cloned().unwrap_or_default();
+            prefixes(name, &mut out);
+            out.extend_from_slice(extensions(name));
+            out
+        };
+        // Every definition a strong definition of `name` kills: its own and
+        // its extensions', never its prefixes'.
+        let killed_by = |name: &str| -> Vec<usize> {
+            let mut out: Vec<usize> = defs_of_name.get(name).cloned().unwrap_or_default();
+            out.extend_from_slice(extensions(name));
+            out
+        };
+
         // GEN/KILL per block, from a sequential pass.
         let mut gen_ = vec![vec![0u64; words]; n];
         let mut kill = vec![vec![0u64; words]; n];
@@ -2109,7 +2585,7 @@ impl<'a, 'o> Body<'a, 'o> {
             for &(_, id) in &block_defs[bi] {
                 let d = &defs[id];
                 if !d.weak {
-                    for &other in &defs_of_name[&d.name] {
+                    for other in killed_by(&d.name) {
                         if other != id {
                             bit(&mut kill[bi], other);
                             gen_[bi][other / 64] &= !(1 << (other % 64));
@@ -2161,6 +2637,7 @@ impl<'a, 'o> Body<'a, 'o> {
         let has_call: Vec<bool> =
             (0..n).map(|bi| self.blocks[bi].ops.iter().any(|op| matches!(op, Op::Args { .. }))).collect();
         let table = &self.atom_table;
+        let roots = &self.atom_roots;
         let clashes = Clashes::build(table);
         let drop_about = |atoms: &Ids, bi: usize| -> Ids {
             let names = &block_def_names[bi];
@@ -2168,7 +2645,12 @@ impl<'a, 'o> Body<'a, 'o> {
             if names.is_empty() && !calls {
                 return *atoms;
             }
-            atoms.retain(|a| table[a as usize].var().is_none_or(|v| !names.contains(v) && (!calls || scalar.contains(v))))
+            // A field path defined here (`a.x`) invalidates atoms about `a`.
+            let defined = |r: &str| {
+                names.contains(r)
+                    || names.iter().any(|n| n.len() > r.len() && n.starts_with(r) && matches!(n.as_bytes()[r.len()], b'.' | b'['))
+            };
+            atoms.retain(|a| roots[a as usize].iter().all(|r| !defined(r) && (!calls || scalar.contains(r))))
         };
         let any_atoms = preds.iter().flatten().any(|(_, a)| !a.is_empty());
 
@@ -2196,12 +2678,32 @@ impl<'a, 'o> Body<'a, 'o> {
         pc_in[0] = Some(Ids::default());
         let mut changed = true;
         let mut rounds = 0;
+        // Widening. The atom sets are capped, and a cap is not monotone: a
+        // set that fills up keeps whichever atoms arrived first, and the
+        // order can differ from round to round, so the iteration may
+        // oscillate. After enough rounds the atoms are dropped altogether
+        // and the pass finishes as plain reaching definitions — which is
+        // sound (no atoms, nothing pruned) and converges (bits only grow).
+        const WIDEN_AFTER: usize = 48;
+        let mut widened = false;
         while changed && rounds < 10_000 {
             changed = false;
             rounds += 1;
+            if rounds == WIDEN_AFTER && !widened {
+                widened = true;
+                for m in cond_in.iter_mut().chain(cond_out.iter_mut()) {
+                    m.clear();
+                }
+                for ck in cond_keys.iter_mut() {
+                    ck.iter_mut().for_each(|w| *w = 0);
+                }
+                for p in pc_in.iter_mut().chain(pc_out.iter_mut()) {
+                    *p = Some(Ids::default());
+                }
+            }
             for bi in 0..n {
                 let mut i = vec![0u64; words];
-                if !any_atoms {
+                if !any_atoms || widened {
                     // No edge establishes anything: plain reaching
                     // definitions, word-wise.
                     for (p, _) in &preds[bi] {
@@ -2253,7 +2755,7 @@ impl<'a, 'o> Body<'a, 'o> {
                     // The path condition along this edge.
                     let Some(ppc) = &pc_out[*p] else { continue };
                     let epc = conjoin(ppc, edge_atoms);
-                    if clashes.contradictory(&epc) {
+                    if clashes.contradictory(&epc, table) {
                         continue;
                     }
                     pc = Some(match pc {
@@ -2281,7 +2783,7 @@ impl<'a, 'o> Body<'a, 'o> {
                                 None => *edge_atoms,
                                 Some(a) => conjoin(a, edge_atoms),
                             };
-                            if clashes.contradictory(&atoms) {
+                            if clashes.contradictory(&atoms, table) {
                                 continue;
                             }
                             i[d / 64] |= 1 << (d % 64);
@@ -2375,14 +2877,10 @@ impl<'a, 'o> Body<'a, 'o> {
                         }
                     }
                     Src::Local(name) => {
-                        if let Some(ids) = defs_of_name.get(name) {
-                            reads.extend(ids.iter().copied().filter(|&id| has(reaching, id)));
-                        }
+                        reads.extend(family(name).into_iter().filter(|&id| has(reaching, id)));
                     }
                     Src::LocalAny(name) => {
-                        if let Some(ids) = defs_of_name.get(name) {
-                            reads.extend(ids.iter().copied());
-                        }
+                        reads.extend(family(name));
                     }
                 }
             }
@@ -2436,7 +2934,7 @@ impl<'a, 'o> Body<'a, 'o> {
                         next_def += 1;
                         resolve_srcs(sources, &reaching, &mut reads[id], &mut direct[id]);
                         if !*weak {
-                            for &other in &defs_of_name[&defs[id].name] {
+                            for other in killed_by(&defs[id].name) {
                                 if other != id {
                                     reaching[other / 64] &= !(1 << (other % 64));
                                 }
@@ -2557,7 +3055,7 @@ impl<'a, 'o> Body<'a, 'o> {
         if potential > FACT_BUDGET {
             let line = self.blocks.first().map_or(0, |b| b.line);
             for o in &origin_list {
-                self.out.flows.push(RawFlow { function, source: o.clone(), sink: FlowNode::Return, line });
+                self.out.flows.push(RawFlow { function, source: o.clone(), sink: FlowNode::Return, line, context: None });
             }
             let mut sink_seen: HashSet<String> = HashSet::new();
             for s in &sinks {
@@ -2569,7 +3067,7 @@ impl<'a, 'o> Body<'a, 'o> {
                     _ => continue,
                 };
                 if sink_seen.insert(format!("{sink_node:?}")) {
-                    self.out.flows.push(RawFlow { function, source: FlowNode::Return, sink: sink_node, line });
+                    self.out.flows.push(RawFlow { function, source: FlowNode::Return, sink: sink_node, line, context: None });
                 }
             }
             self.out.summarised.push(function);
@@ -2579,25 +3077,49 @@ impl<'a, 'o> Body<'a, 'o> {
         // definitions reach). Flow-insensitive by construction — one name,
         // every definition — and recorded beside the facts, not in them.
         let param_names: HashSet<&str> = self.params.iter().map(|(n, _)| n.as_str()).collect();
-        let is_local_row = |name: &str| !param_names.contains(name) && !is_param_src(name);
+        // A field path (`a.x`, `a[]`) is a value of the analysis, not a
+        // local of its own: it is read and written under its root's row.
+        let is_local_row = |name: &str| !param_names.contains(name) && !is_param_src(name) && !name.contains(['.', '[']);
         if potential <= FACT_BUDGET && function.is_some() {
-            let mut seen_in: HashSet<(usize, String)> = HashSet::new();
+            let mut seen_in: HashSet<(usize, String, u32)> = HashSet::new();
+            let root_of = |name: &str| name[..name.find(['.', '[']).unwrap_or(name.len())].to_string();
+            // Each definition's line, so the local view can say which
+            // assignment a value came in by and which ones reach a read.
+            let def_line: Vec<u32> = {
+                let mut v = vec![0u32; defs.len()];
+                for (bi, b) in self.blocks.iter().enumerate() {
+                    let mut k = 0usize;
+                    for op in &b.ops {
+                        if let Op::Def { target: Target::Local(_), line, .. } = op {
+                            v[block_defs[bi][k].1] = *line;
+                            k += 1;
+                        }
+                    }
+                }
+                v
+            };
             for (d, info) in defs.iter().enumerate() {
-                if !is_local_row(&info.name) {
+                let root = root_of(&info.name);
+                if !is_local_row(&root) {
                     continue;
                 }
+                let def_line = def_line[d];
                 for (i, o) in origin_list.iter().enumerate() {
-                    if origins[d][i / 64] & (1 << (i % 64)) != 0 && seen_in.insert((i, info.name.clone())) {
+                    if origins[d][i / 64] & (1 << (i % 64)) != 0 && seen_in.insert((i, root.clone(), def_line)) {
                         self.out.local_flows.push(RawFlow {
                             function,
                             source: o.clone(),
-                            sink: FlowNode::Local(info.name.clone()),
-                            line: self.blocks[0].line,
+                            sink: FlowNode::Local(root.clone()),
+                            line: def_line,
+                            context: Some(def_line.to_string()),
                         });
                     }
                 }
             }
-            let mut seen_out: HashSet<(String, String)> = HashSet::new();
+            // `local -> sink`, once per pair, carrying the lines of every
+            // definition of the local that reaches the read.
+            let mut outs: HashMap<(String, String), (FlowNode, u32, Vec<u32>)> = HashMap::new();
+            let mut order: Vec<(String, String)> = Vec::new();
             for s in &sinks {
                 let op = &self.blocks[s.block].ops[s.op & 0xFF_FFFF_FFFF];
                 let (sink_node, line) = match op {
@@ -2607,16 +3129,30 @@ impl<'a, 'o> Body<'a, 'o> {
                     _ => continue,
                 };
                 for &r in &s.reads {
-                    let name = &defs[r].name;
-                    if is_local_row(name) && seen_out.insert((name.clone(), format!("{sink_node:?}"))) {
-                        self.out.local_flows.push(RawFlow {
-                            function,
-                            source: FlowNode::Local(name.clone()),
-                            sink: sink_node.clone(),
-                            line,
-                        });
+                    let name = root_of(&defs[r].name);
+                    if !is_local_row(&name) {
+                        continue;
                     }
+                    let key = (name.clone(), format!("{sink_node:?}"));
+                    let e = outs.entry(key.clone()).or_insert_with(|| {
+                        order.push(key);
+                        (sink_node.clone(), line, Vec::new())
+                    });
+                    e.2.push(def_line[r]);
                 }
+            }
+            for key in order {
+                let (sink_node, line, mut lines) = outs.remove(&key).expect("recorded");
+                lines.sort_unstable();
+                lines.dedup();
+                let context = lines.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+                self.out.local_flows.push(RawFlow {
+                    function,
+                    source: FlowNode::Local(key.0),
+                    sink: sink_node,
+                    line,
+                    context: Some(context),
+                });
             }
         }
         if let Some(function) = function {
@@ -2665,7 +3201,7 @@ impl<'a, 'o> Body<'a, 'o> {
                     continue;
                 }
                 if seen.insert((i, format!("{sink_node:?}"))) {
-                    self.out.flows.push(RawFlow { function, source: o.clone(), sink: sink_node.clone(), line });
+                    self.out.flows.push(RawFlow { function, source: o.clone(), sink: sink_node.clone(), line, context: None });
                 }
             }
         }
@@ -2720,7 +3256,14 @@ impl<'a, 'o> Body<'a, 'o> {
             u.sort();
             u.dedup();
             let tidy = |v: Option<&Vec<String>>| -> Vec<String> {
-                let mut v: Vec<String> = v.cloned().unwrap_or_default().into_iter().filter(|n| !param_names.contains(n.as_str())).collect();
+                // A field path counts as its root.
+                let mut v: Vec<String> = v
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|n| n[..n.find(['.', '[']).unwrap_or(n.len())].to_string())
+                    .filter(|n| !param_names.contains(n.as_str()))
+                    .collect();
                 v.sort();
                 v.dedup();
                 v

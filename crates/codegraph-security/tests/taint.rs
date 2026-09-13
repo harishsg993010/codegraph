@@ -670,3 +670,42 @@ func viaGetenv(input string) {
     let env = finding_names(&e, &spec(&["Getenv"]));
     assert!(env.iter().any(|f| f.starts_with("Getenv") && f.ends_with("Command")), "{env:?}");
 }
+
+/// Context sensitivity: a value that enters a shared callee from one call
+/// site leaves it into that call site only. `id` is called by `tainted`
+/// with a source and by `clean` with a constant; without matching the
+/// sites, the source would reach `clean`'s sink through `id`'s one
+/// `param -> return` edge.
+#[test]
+fn a_value_leaves_a_callee_only_at_the_call_site_it_entered() {
+    let src = tempfile::tempdir().unwrap();
+    write(
+        src.path(),
+        "a.py",
+        "def ident(x):\n    return x\n\ndef tainted(req):\n    v = ident(req)\n    return v\n\ndef clean():\n    c = ident(\"constant\")\n    run_shell(c)\n\ndef also_tainted(req):\n    d = ident(req)\n    run_shell(d)\n",
+    );
+    let (_sd, e) = build_engine(src.path());
+    let spec = TaintSpec::new("cs").mode(Mode::DataFlow).source(Matcher::name("tainted")).source(Matcher::name("also_tainted")).sink(Matcher::name("run_shell"));
+    let a = Security::new(&e).analyse(&spec, 100).unwrap();
+    // The sources that reach run_shell, by line: `also_tainted`'s req (line
+    // 12) does, through ident at its own call site; `tainted`'s req (line 4)
+    // enters ident at a site that leaves only into `v`, and `v` is returned,
+    // not run. Context-insensitively both would be reported.
+    let mut lines: Vec<u32> = a.findings.iter().map(|f| f.source.line).collect();
+    lines.sort();
+    lines.dedup();
+    assert_eq!(lines, [12], "{:?}", a.findings.iter().map(|f| f.path.iter().map(|s| format!("{}:{}", s.name, s.line)).collect::<Vec<_>>()).collect::<Vec<_>>());
+    // Two levels: `wrap` calls `ident`; the site stack matches both.
+    write(
+        src.path(),
+        "b.py",
+        "def ident2(x):\n    return x\n\ndef wrap(y):\n    return ident2(y)\n\ndef hot(req):\n    run_shell(wrap(req))\n\ndef cold():\n    run_shell(wrap(\"k\"))\n",
+    );
+    let (_sd, e) = build_engine(src.path());
+    let spec = TaintSpec::new("cs2").mode(Mode::DataFlow).source(Matcher::name("hot")).sink(Matcher::name("run_shell"));
+    let a = Security::new(&e).analyse(&spec, 100).unwrap();
+    // Exactly the hot path: hot's req -> wrap -> ident2 -> wrap -> run_shell.
+    let paths: Vec<Vec<String>> = a.findings.iter().map(|f| f.path.iter().map(|s| s.name.clone()).collect()).collect();
+    assert!(paths.iter().all(|p| p.first().map(String::as_str) == Some("req") || p.first().map(String::as_str) == Some("hot")), "{paths:?}");
+    assert!(!paths.is_empty(), "the two-level flow is missing");
+}

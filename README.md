@@ -50,13 +50,19 @@ owned by their package.
 
 **Value flow.** Reaching definitions over the CFG — statement order,
 branches, loops to a fixpoint, kills, weak definitions for anything
-uncertain — with **predicate-aware pruning**: a definition made under `c`
-does not reach a use under `not c`. Lifted to interprocedural `flows_to`
-edges: a parameter into a callee's parameter, a call result into a
-variable, an argument into a library stub, a function's return standing
-for its value. **Library summaries** (~1,150 entries) say what known calls
-do with their inputs — `fmt.Sprintf` formats its arguments, `assert.Equal`
-does nothing, `json.Unmarshal` writes its second argument from its first,
+uncertain — **field-sensitive** on locals (`a.x` and `a.y` are different
+values), **alias-aware** (`p = &x; *p = v` writes `x`; `b = a; b.x = v`
+writes `a.x` where a copy shares the object), and with **predicate-aware
+pruning**: a definition made under `c` does not reach a use under `not
+c`, whether `c` is a local against a literal, two locals compared, or a
+pure test like `len(x) > 0`. Lifted to interprocedural `flows_to` edges —
+a parameter into a callee's parameter, a call result into a variable, an
+argument into a library stub — and searched **context-sensitively**: every
+edge into or out of a callee carries its call site, and a value leaves a
+callee only where it entered. **Library summaries** (~1,400 entries, plus
+your own in `.codegraph-summaries.json`) say what known calls do with
+their inputs — `fmt.Sprintf` formats its arguments, `assert.Equal` does
+nothing, `json.Unmarshal` writes its second argument from its first,
 `strcpy` writes its first, `os.Getenv` returns external data — so an
 unknown call's sound-but-loose default ("everything may reach everything")
 applies only where nothing better is known.
@@ -76,7 +82,7 @@ that direction, and the limits are stated in the docs.
 | `affected <store> <symbol>` | Blast radius: what breaks if this changes. |
 | `cfg <store> <callable>` | The stored control-flow graph, with what each block reads and writes. |
 | `diff <src> [--depth n] [--fail-on-break]` | What the uncommitted edits do: symbols added, removed, re-signed, redefined or re-bound; the dependents each breaks; a trace of what each reaches through calls, references, imports, subtypes and value flow. Runs on a scratch copy; the store is not modified. |
-| `audit <store> [--mode callgraph\|dataflow]` | Taint analyses from starter specs (command injection, SQL injection, path traversal). Call-graph mode: a call path from a source to a sink function. Dataflow mode: a *value* from a source reaching a sink's argument, sanitiser-aware, matched through library stubs by call site. |
+| `audit <store> [--mode callgraph\|dataflow]` | Taint analyses from starter specs (command injection, SQL injection, path traversal). Call-graph mode: a call path from a source to a sink function. Dataflow mode: a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. |
 | `deps <store> [package]` | Which of our code reaches an external package. |
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
 
@@ -121,16 +127,35 @@ files), the bugs each phase surfaced, and the limits stated plainly:
   the ownership rule for cross-file edges.
 - `docs/phase8-results.md` — library summaries; locals in the store.
 - `docs/phase9-results.md` — `diff`.
+- `docs/phase10-results.md` — context sensitivity, aliasing, field
+  sensitivity, richer predicates, user summaries, flow-sensitive locals.
 
 ## Limits
 
-Context-insensitive across calls (a callee's summary is one edge for every
-caller; stubs are the exception, by call-site tag). No alias analysis.
-Field sensitivity only for `self.x`, receiver fields and module names.
-Predicates decide only what a literal decides. Library summaries cover the
-standard libraries and common idioms; an unknown name keeps the sound
-default. Locals are stored flow-insensitively (one row per name); the flow
-facts stay flow-sensitive.
+Each of these is a bound, stated so the answers can be read correctly;
+`docs/phase10-results.md` says what each one was, what it is now, and why
+the rest is fundamental.
+
+- **Across calls**: call-site matching to a stack depth of 6; deeper
+  recursion re-admits callers. Callees the binder cannot resolve are
+  library stubs.
+- **Aliasing**: a may-alias class per function — by address (`&x`) and,
+  where a copy shares the object, by copy (`b = a`). Not through
+  containers, not across calls, not between parameters.
+- **Fields**: a local's fields are their own values (`a.x`, `a[]`); `self`
+  fields and non-local fields are per field only; array indices are
+  folded.
+- **Predicates**: locals and pure terms (`len(x)`, `s.isEmpty()`, 73
+  names) against literals and each other, integer intervals and
+  equalities decided exactly; no arithmetic, no theory beyond that.
+- **Library summaries**: ~1,400 built-in entries plus your own in
+  `.codegraph-summaries.json`; an unknown name keeps the sound default
+  (everything may reach everything).
+- **Locals** are one stored row per name; the `local_flow` edges carry
+  the definition lines, so `explain` is flow-sensitive without more rows.
+- **Sinks by name**: the starter specs match `Exec`, `Open` by name; a
+  database `Exec` and a shell `Exec` are one sink until a spec qualifies
+  them.
 
 ## License
 

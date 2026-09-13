@@ -290,6 +290,62 @@ static QUALIFIED: &[(&str, &str, &str, Shape)] = &[
     ("go", "require", "Greater", Nothing),
     ("go", "require", "Less", Nothing),
     ("go", "require", "Fail", Nothing),
+    ("go", "http", "NewRequest", Args),
+    ("go", "http", "NewRequestWithContext", Args),
+    ("go", "http", "Get", External),
+    ("go", "http", "Post", External),
+    ("go", "http", "Error", Nothing),
+    ("go", "http", "Redirect", Nothing),
+    ("go", "http", "StatusText", Nothing),
+    ("go", "sql", "Open", Nothing),
+    ("go", "sql", "Named", Args),
+    ("go", "template", "New", Nothing),
+    ("go", "template", "Must", Args),
+    ("go", "exec", "Command", Args),
+    ("go", "exec", "CommandContext", Args),
+    ("go", "exec", "LookPath", Args),
+    ("go", "regexp", "MustCompile", Args),
+    ("go", "regexp", "Compile", Args),
+    ("go", "regexp", "MatchString", Nothing),
+    ("go", "regexp", "QuoteMeta", Args),
+    ("go", "utf8", "RuneCountInString", Nothing),
+    ("go", "utf8", "ValidString", Nothing),
+    ("go", "unicode", "IsLetter", Nothing),
+    ("go", "unicode", "IsDigit", Nothing),
+    ("go", "unicode", "IsSpace", Nothing),
+    ("go", "rand", "Intn", Nothing),
+    ("go", "rand", "Int", Nothing),
+    ("go", "rand", "Read", FillsFirst),
+    ("go", "binary", "Read", FillsRest),
+    ("go", "binary", "Write", Nothing),
+    ("go", "sha256", "Sum256", Args),
+    ("go", "sha1", "Sum", Args),
+    ("go", "md5", "Sum", Args),
+    ("go", "hmac", "New", Nothing),
+    ("go", "hmac", "Equal", Nothing),
+    ("go", "bcrypt", "GenerateFromPassword", Args),
+    ("go", "bcrypt", "CompareHashAndPassword", Nothing),
+    ("go", "atomic", "AddInt64", Nothing),
+    ("go", "atomic", "LoadInt64", Nothing),
+    ("go", "atomic", "StoreInt64", Nothing),
+    ("go", "reflect", "TypeOf", Nothing),
+    ("go", "reflect", "ValueOf", Args),
+    ("go", "reflect", "DeepEqual", Nothing),
+    ("go", "mime", "TypeByExtension", Nothing),
+    ("go", "user", "Current", External),
+    ("go", "net", "JoinHostPort", Args),
+    ("go", "net", "SplitHostPort", Args),
+    ("go", "net", "ParseIP", Args),
+    ("go", "net", "Dial", Nothing),
+    ("go", "gzip", "NewReader", Args),
+    ("go", "gzip", "NewWriter", Args),
+    ("go", "tar", "NewReader", Args),
+    ("go", "zip", "NewReader", Args),
+    ("go", "csv", "NewReader", Args),
+    ("go", "csv", "NewWriter", Args),
+    ("go", "uuid", "New", Nothing),
+    ("go", "uuid", "NewString", Nothing),
+    ("go", "uuid", "Parse", Args),
     // --- Python ---
     ("python", "os.path", "join", Args),
     ("python", "os.path", "basename", Args),
@@ -371,6 +427,86 @@ static QUALIFIED: &[(&str, &str, &str, Shape)] = &[
     ("python", "hashlib", "sha1", Args),
     ("python", "sys.stdin", "read", External),
     ("python", "sys.stdin", "readline", External),
+    ("python", "subprocess", "run", External),
+    ("python", "subprocess", "check_output", External),
+    ("python", "subprocess", "Popen", Nothing),
+    ("python", "subprocess", "call", Nothing),
+    ("python", "os", "system", Nothing),
+    ("python", "os", "popen", External),
+    ("python", "os", "remove", Nothing),
+    ("python", "os", "makedirs", Nothing),
+    ("python", "os", "mkdir", Nothing),
+    ("python", "os", "chdir", Nothing),
+    ("python", "os", "walk", External),
+    ("python", "os", "urandom", External),
+    ("python", "shutil", "copy", Nothing),
+    ("python", "shutil", "copyfile", Nothing),
+    ("python", "shutil", "rmtree", Nothing),
+    ("python", "shutil", "move", Nothing),
+    ("python", "shutil", "which", Args),
+    ("python", "requests", "get", External),
+    ("python", "requests", "post", External),
+    ("python", "requests", "put", External),
+    ("python", "requests", "delete", External),
+    ("python", "requests", "request", External),
+    ("python", "urllib.request", "urlopen", External),
+    ("python", "urllib.request", "Request", Args),
+    ("python", "flask", "jsonify", Args),
+    ("python", "flask", "render_template", Args),
+    ("python", "flask", "render_template_string", Args),
+    ("python", "flask", "redirect", Args),
+    ("python", "flask", "abort", Nothing),
+    ("python", "flask", "url_for", Args),
+    ("python", "flask", "make_response", Args),
+    ("python", "flask", "escape", Args),
+    ("python", "markupsafe", "escape", Args),
+    ("python", "markupsafe", "Markup", Args),
+    ("python", "request", "get_json", External),
+    ("python", "request.args", "get", External),
+    ("python", "request.form", "get", External),
+    ("python", "request.headers", "get", External),
+    ("python", "request.cookies", "get", External),
+    ("python", "request.files", "get", External),
+    ("python", "django.shortcuts", "render", Args),
+    ("python", "django.shortcuts", "redirect", Args),
+    ("python", "django.shortcuts", "get_object_or_404", Args),
+    ("python", "django.http", "HttpResponse", Args),
+    ("python", "django.http", "JsonResponse", Args),
+    ("python", "django.http", "HttpResponseRedirect", Args),
+    ("python", "django.utils.html", "escape", Args),
+    ("python", "django.utils.html", "format_html", Args),
+    ("python", "django.utils.html", "mark_safe", Args),
+    ("python", "sqlite3", "connect", Nothing),
+    ("python", "psycopg2", "connect", Nothing),
+    ("python", "pymysql", "connect", Nothing),
+    ("python", "pickle", "loads", Args),
+    ("python", "pickle", "dumps", Args),
+    ("python", "pickle", "load", External),
+    ("python", "yaml", "safe_load", Args),
+    ("python", "yaml", "load", Args),
+    ("python", "yaml", "dump", Args),
+    ("python", "yaml", "safe_dump", Args),
+    ("python", "struct", "pack", Args),
+    ("python", "struct", "unpack", Args),
+    ("python", "zlib", "compress", Args),
+    ("python", "zlib", "decompress", Args),
+    ("python", "gzip", "open", Nothing),
+    ("python", "io", "StringIO", Args),
+    ("python", "io", "BytesIO", Args),
+    ("python", "tempfile", "mkdtemp", Nothing),
+    ("python", "tempfile", "NamedTemporaryFile", Nothing),
+    ("python", "secrets", "token_hex", Nothing),
+    ("python", "secrets", "token_urlsafe", Nothing),
+    ("python", "uuid", "uuid4", Nothing),
+    ("python", "itertools", "chain", Args),
+    ("python", "functools", "partial", Args),
+    ("python", "functools", "reduce", Args),
+    ("python", "operator", "itemgetter", Nothing),
+    ("python", "math", "floor", Nothing),
+    ("python", "math", "ceil", Nothing),
+    ("python", "math", "sqrt", Nothing),
+    ("python", "ast", "literal_eval", Args),
+    ("python", "inspect", "signature", Nothing),
     // --- JavaScript / TypeScript ---
     ("js", "JSON", "parse", Args),
     ("js", "JSON", "stringify", Args),
@@ -426,6 +562,74 @@ static QUALIFIED: &[(&str, &str, &str, Shape)] = &[
     ("js", "localStorage", "getItem", External),
     ("js", "sessionStorage", "getItem", External),
     ("js", "window", "fetch", External),
+    ("js", "fs", "readFileSync", External),
+    ("js", "fs", "readFile", External),
+    ("js", "fs", "writeFileSync", Nothing),
+    ("js", "fs", "writeFile", Nothing),
+    ("js", "fs", "existsSync", Nothing),
+    ("js", "fs", "mkdirSync", Nothing),
+    ("js", "fs", "readdirSync", External),
+    ("js", "fs", "statSync", Nothing),
+    ("js", "fs", "unlinkSync", Nothing),
+    ("js", "fs", "createReadStream", Nothing),
+    ("js", "fs", "createWriteStream", Nothing),
+    ("js", "child_process", "exec", Nothing),
+    ("js", "child_process", "execSync", External),
+    ("js", "child_process", "spawn", Nothing),
+    ("js", "child_process", "spawnSync", External),
+    ("js", "child_process", "execFile", Nothing),
+    ("js", "crypto", "randomBytes", External),
+    ("js", "crypto", "randomUUID", Nothing),
+    ("js", "crypto", "createHash", Nothing),
+    ("js", "crypto", "createHmac", Nothing),
+    ("js", "os", "homedir", External),
+    ("js", "os", "tmpdir", External),
+    ("js", "os", "platform", Nothing),
+    ("js", "url", "parse", Args),
+    ("js", "url", "format", Args),
+    ("js", "querystring", "parse", Args),
+    ("js", "querystring", "stringify", Args),
+    ("js", "util", "format", Args),
+    ("js", "util", "inspect", Args),
+    ("js", "util", "promisify", Args),
+    ("js", "axios", "get", External),
+    ("js", "axios", "post", External),
+    ("js", "axios", "request", External),
+    ("js", "express", "Router", Nothing),
+    ("js", "express", "static", Nothing),
+    ("js", "express", "json", Nothing),
+    ("js", "res", "json", Nothing),
+    ("js", "res", "send", Nothing),
+    ("js", "res", "render", Nothing),
+    ("js", "res", "redirect", Nothing),
+    ("js", "res", "status", Nothing),
+    ("js", "res", "sendFile", Nothing),
+    ("js", "res", "cookie", Nothing),
+    ("js", "res", "end", Nothing),
+    ("js", "req.query", "get", External),
+    ("js", "req.params", "get", External),
+    ("js", "req.headers", "get", External),
+    ("js", "$", "ajax", External),
+    ("js", "$", "get", External),
+    ("js", "$", "post", External),
+    ("js", "DOMPurify", "sanitize", Args),
+    ("js", "validator", "escape", Args),
+    ("js", "he", "encode", Args),
+    ("js", "he", "decode", Args),
+    ("js", "lodash", "get", Args),
+    ("js", "_", "get", Args),
+    ("js", "_", "map", Args),
+    ("js", "_", "filter", Args),
+    ("js", "_", "merge", WritesFirst),
+    ("js", "_", "cloneDeep", Args),
+    ("js", "_", "isEmpty", Nothing),
+    ("js", "_", "isNil", Nothing),
+    ("js", "_", "escape", Args),
+    ("js", "yaml", "load", Args),
+    ("js", "yaml", "dump", Args),
+    ("js", "Number", "toString", Args),
+    ("js", "Reflect", "get", Args),
+    ("js", "Reflect", "has", Nothing),
     // --- Java ---
     ("java", "String", "format", Args),
     ("java", "String", "valueOf", Args),
@@ -499,6 +703,64 @@ static QUALIFIED: &[(&str, &str, &str, Shape)] = &[
     ("java", "LOG", "debug", Nothing),
     ("java", "LOG", "warn", Nothing),
     ("java", "LOG", "error", Nothing),
+    ("java", "Files", "write", Nothing),
+    ("java", "Files", "writeString", Nothing),
+    ("java", "Files", "createDirectories", Nothing),
+    ("java", "Files", "delete", Nothing),
+    ("java", "Files", "copy", Nothing),
+    ("java", "Files", "move", Nothing),
+    ("java", "Files", "newBufferedReader", Nothing),
+    ("java", "Files", "newInputStream", Nothing),
+    ("java", "Files", "lines", External),
+    ("java", "Files", "list", External),
+    ("java", "Files", "walk", External),
+    ("java", "Files", "size", Nothing),
+    ("java", "Runtime", "getRuntime", Nothing),
+    ("java", "Thread", "sleep", Nothing),
+    ("java", "Thread", "currentThread", Nothing),
+    ("java", "UUID", "randomUUID", Nothing),
+    ("java", "UUID", "fromString", Args),
+    ("java", "Character", "isDigit", Nothing),
+    ("java", "Character", "isLetter", Nothing),
+    ("java", "Character", "toUpperCase", Args),
+    ("java", "Character", "toLowerCase", Args),
+    ("java", "StringUtils", "isBlank", Nothing),
+    ("java", "StringUtils", "isEmpty", Nothing),
+    ("java", "StringUtils", "isNotBlank", Nothing),
+    ("java", "StringUtils", "isNotEmpty", Nothing),
+    ("java", "StringUtils", "trim", Args),
+    ("java", "StringUtils", "join", Args),
+    ("java", "StringUtils", "substring", Args),
+    ("java", "StringUtils", "defaultString", Args),
+    ("java", "StringUtils", "replace", Args),
+    ("java", "StringEscapeUtils", "escapeHtml4", Args),
+    ("java", "StringEscapeUtils", "escapeJava", Args),
+    ("java", "StringEscapeUtils", "unescapeHtml4", Args),
+    ("java", "HtmlUtils", "htmlEscape", Args),
+    ("java", "Jsoup", "clean", Args),
+    ("java", "Jsoup", "parse", Args),
+    ("java", "ResponseEntity", "ok", Args),
+    ("java", "ResponseEntity", "status", Nothing),
+    ("java", "ResponseEntity", "badRequest", Nothing),
+    ("java", "Stream", "of", Args),
+    ("java", "Collectors", "toList", Nothing),
+    ("java", "Collectors", "toSet", Nothing),
+    ("java", "Collectors", "joining", Nothing),
+    ("java", "Collectors", "toMap", Nothing),
+    ("java", "IOUtils", "toString", Args),
+    ("java", "IOUtils", "toByteArray", Args),
+    ("java", "IOUtils", "copy", Nothing),
+    ("java", "FileUtils", "readFileToString", External),
+    ("java", "FileUtils", "writeStringToFile", Nothing),
+    ("java", "DriverManager", "getConnection", Nothing),
+    ("java", "LoggerFactory", "getLogger", Nothing),
+    ("java", "Logger", "getLogger", Nothing),
+    ("java", "System", "exit", Nothing),
+    ("java", "System", "arraycopy", Nothing),
+    ("java", "System", "lineSeparator", Nothing),
+    ("java", "Executors", "newFixedThreadPool", Nothing),
+    ("java", "CompletableFuture", "supplyAsync", Args),
+    ("java", "CompletableFuture", "completedFuture", Args),
     // --- C# ---
     ("csharp", "String", "Format", Args),
     ("csharp", "string", "Format", Args),
@@ -1302,7 +1564,104 @@ static METHODS: &[(&str, &str, Shape)] = &[
 ///
 /// `qualifier` is the receiver when it is a dotted name (a package or a
 /// type); `has_receiver` says whether there is any receiver at all.
+/// A summary the user adds for their own libraries, from
+/// `.codegraph-summaries.json` at the source root — a JSON array of
+/// objects: `{"name": "Sanitize", "shape": "Nothing"}` with optional
+/// `"lang"` (default every language), `"qualifier"` (a package or type; the
+/// entry then matches `qualifier.name`) and `"method": true` (matches
+/// `anything.name`). Shapes are the [`Shape`] names. User entries are
+/// consulted before the built-in tables.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserSummary {
+    pub lang: String,
+    pub qualifier: Option<String>,
+    pub method: bool,
+    pub name: String,
+    pub shape: Shape,
+}
+
+impl Shape {
+    pub fn parse(s: &str) -> Option<Shape> {
+        Some(match s {
+            "Args" => Args,
+            "RecvArgs" => RecvArgs,
+            "Recv" => Recv,
+            "Nothing" => Nothing,
+            "External" => External,
+            "Mutates" => Mutates,
+            "WritesFirst" => WritesFirst,
+            "WritesSecondFromFirst" => WritesSecondFromFirst,
+            "FillsFirst" => FillsFirst,
+            "FillsSecond" => FillsSecond,
+            "FillsRest" => FillsRest,
+            "WritesFirstFromRecv" => WritesFirstFromRecv,
+            "WritesRestFromRecv" => WritesRestFromRecv,
+            _ => return None,
+        })
+    }
+}
+
+static USER: std::sync::RwLock<Vec<UserSummary>> = std::sync::RwLock::new(Vec::new());
+
+/// Install the user's summaries for this process; replaces any previous set.
+pub fn install_user_summaries(entries: Vec<UserSummary>) {
+    *USER.write().expect("summaries lock") = entries;
+}
+
+/// Parse the contents of a `.codegraph-summaries.json`. Malformed entries
+/// are reported by index, not silently dropped.
+pub fn parse_user_summaries(json: &str) -> std::result::Result<Vec<UserSummary>, String> {
+    let raw: Vec<serde_json::Value> = serde_json::from_str(json).map_err(|e| format!("not a JSON array: {e}"))?;
+    let mut out = Vec::new();
+    for (i, v) in raw.iter().enumerate() {
+        let name = v.get("name").and_then(|n| n.as_str()).ok_or_else(|| format!("entry {i}: missing \"name\""))?;
+        let shape_s = v.get("shape").and_then(|n| n.as_str()).ok_or_else(|| format!("entry {i}: missing \"shape\""))?;
+        let shape = Shape::parse(shape_s).ok_or_else(|| format!("entry {i}: unknown shape {shape_s:?}"))?;
+        out.push(UserSummary {
+            lang: v.get("lang").and_then(|n| n.as_str()).unwrap_or("*").to_string(),
+            qualifier: v.get("qualifier").and_then(|n| n.as_str()).map(str::to_string),
+            method: v.get("method").and_then(|n| n.as_bool()).unwrap_or(false),
+            name: name.to_string(),
+            shape,
+        });
+    }
+    Ok(out)
+}
+
+/// Load `<root>/.codegraph-summaries.json` if present and install it.
+/// Returns how many entries, or the parse error.
+pub fn load_user_summaries(root: &std::path::Path) -> std::result::Result<usize, String> {
+    let path = root.join(".codegraph-summaries.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        install_user_summaries(Vec::new());
+        return Ok(0);
+    };
+    let entries = parse_user_summaries(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let n = entries.len();
+    install_user_summaries(entries);
+    Ok(n)
+}
+
 pub fn lookup(lang: &str, qualifier: Option<&str>, has_receiver: bool, name: &str) -> Option<Summary> {
+    // The user's entries first: they know their libraries.
+    if let Ok(user) = USER.read()
+        && !user.is_empty()
+    {
+        let last = qualifier.map(|q| q.rsplit(['.', ':']).next().unwrap_or(q));
+        for u in user.iter() {
+            if u.name != name || !lang_matches(&u.lang, lang) {
+                continue;
+            }
+            let hit = match (&u.qualifier, u.method) {
+                (Some(q), _) => qualifier == Some(q.as_str()) || last == Some(q.as_str()),
+                (None, true) => has_receiver,
+                (None, false) => !has_receiver,
+            };
+            if hit {
+                return Some(Summary::of(u.shape));
+            }
+        }
+    }
     if let Some(q) = qualifier {
         // The full qualifier first (`os.path`), then its last segment
         // (`path`, for `filepath.Join` written as `filepath`).

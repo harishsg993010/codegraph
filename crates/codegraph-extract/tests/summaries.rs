@@ -108,3 +108,27 @@ fn a_summarised_result_carries_only_what_the_summary_says() {
     assert!(f.calls[call(&f, r, "len") as usize].summarised);
     assert!(f.calls[call(&f, r, "strip") as usize].summarised);
 }
+
+/// The user's own summaries, from `.codegraph-summaries.json`, come first.
+#[test]
+fn user_summaries_extend_the_table() {
+    use codegraph_extract::summaries::{Shape, install_user_summaries, lookup, parse_user_summaries};
+    let entries = parse_user_summaries(
+        r#"[
+            {"lang": "go", "qualifier": "mylib", "name": "Sanitize", "shape": "Nothing"},
+            {"name": "frob", "method": true, "shape": "Mutates"},
+            {"name": "my_strcpy", "shape": "WritesFirst"}
+        ]"#,
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 3);
+    install_user_summaries(entries);
+    assert!(lookup("go", Some("mylib"), true, "Sanitize").unwrap().result.is_empty());
+    assert_eq!(lookup("python", Some("self.x"), true, "frob").unwrap().writes.len(), 1);
+    assert!(lookup("c", None, false, "my_strcpy").is_some());
+    assert!(lookup("c", Some("x"), true, "my_strcpy").is_none(), "a bare entry does not match a method");
+    install_user_summaries(Vec::new());
+    assert!(lookup("go", Some("mylib"), true, "Sanitize").is_none());
+    assert!(parse_user_summaries(r#"[{"name": "x", "shape": "Bogus"}]"#).is_err());
+    let _ = Shape::Args;
+}

@@ -1567,7 +1567,7 @@ struct FlowResolver<'r, 'a> {
     /// Per file: callable -> its parameters as `(position, symbol)`.
     params_by_callable: Vec<HashMap<u32, Vec<(u32, u32)>>>,
     refs_seen: HashSet<(LocalId, SymbolKey)>,
-    local_flows_seen: HashSet<(LocalId, SymbolKey)>,
+    local_flows_seen: HashSet<(LocalId, SymbolKey, Option<String>)>,
     flows_seen: HashSet<(LocalId, SymbolKey, Option<String>)>,
 }
 
@@ -1797,14 +1797,14 @@ impl<'r, 'a> FlowResolver<'r, 'a> {
                 let Some(sink) = self.end(fi, fl.function, &fl.sink, false) else { continue };
                 let Some(source) = self.source_row(fi, src) else { continue };
                 let target = self.key_of(sink);
-                if self.local_flows_seen.insert((source, target)) {
+                if self.local_flows_seen.insert((source, target, fl.context.clone())) {
                     self.b.add_edge(Edge {
                         source,
                         target,
                         rel: Relation::LocalFlow,
                         conf: self.confidence(fi, &fl.source, &fl.sink),
                         line: fl.line,
-                        context: None,
+                        context: fl.context.as_deref(),
                         flags: 0,
                     });
                     self.stats.local_flows += 1;
@@ -1823,21 +1823,24 @@ impl<'r, 'a> FlowResolver<'r, 'a> {
     /// may be empty. A search leaving a stub matches `leave` against the site
     /// it entered on, and takes `enter` as the site for the next stub.
     fn call_site(&self, fi: usize, source: &FlowNode, sink: &FlowNode, external_source: bool) -> Option<String> {
-        let unresolved = |n: &FlowNode| match n {
-            FlowNode::CallResult(k) | FlowNode::Arg(k, _) => {
-                matches!(self.bound[fi].get(*k as usize), Some(None)).then_some(*k)
-            }
+        // Every call, bound or not: the tag is what makes a value that
+        // enters a callee at one call site leave it at the same one — the
+        // search matches `enter` and `leave` like parentheses, so a
+        // callee's one `param -> return` edge serves every caller without
+        // joining them.
+        let site = |n: &FlowNode| match n {
+            FlowNode::CallResult(k) | FlowNode::Arg(k, _) => Some(*k),
             _ => None,
         };
-        // External data leaves a stub on no call site: it did not come in.
-        let leave = if external_source { None } else { unresolved(source) };
-        let enter = unresolved(sink);
+        let path = self.corpus[fi].path;
+        // External data leaves a stub on a site nothing enters on: the
+        // value did not come in through any argument.
+        let leave = if external_source { Some("!".to_string()) } else { site(source).map(|k| format!("{path}#{k}")) };
+        let enter = site(sink).map(|k| format!("{path}#{k}"));
         if leave.is_none() && enter.is_none() {
             return None;
         }
-        let path = self.corpus[fi].path;
-        let tag = |k: Option<u32>| k.map(|k| format!("{path}#{k}")).unwrap_or_default();
-        Some(format!("{}>{}", tag(leave), tag(enter)))
+        Some(format!("{}>{}", leave.unwrap_or_default(), enter.unwrap_or_default()))
     }
 
     /// A flow's confidence: certain when both ends are this file's own
@@ -1924,7 +1927,13 @@ impl<'r, 'a> FlowResolver<'r, 'a> {
                 Some(c) => End::Sym(fi, c),
                 None => End::Key(self.corpus[fi].file_key),
             }),
-            FlowNode::NonLocal(name, self_field) => self.non_local(fi, function, name, *self_field),
+            // A package is not a value: `os.Stdout.Write(x)` writes into
+            // nothing this graph carries, and `p := os.ErrNotExist` reads
+            // nothing it carries either. A package node in the flow graph
+            // would join every writer of any `os.*` to every reader.
+            FlowNode::NonLocal(name, self_field) => self
+                .non_local(fi, function, name, *self_field)
+                .filter(|e| !matches!(e, End::Key(k) if self.qual_packages[fi].values().any(|p| p == k))),
             FlowNode::CallResult(k) => match self.bound[fi].get(*k as usize).copied().flatten() {
                 Some((cf, cs)) => Some(End::Sym(cf, cs)),
                 None => Some(End::Key(self.stub_for(fi, *k))),

@@ -155,8 +155,8 @@ enum AuditMode {
     /// A finding is a call path from a source function to a sink function.
     Callgraph,
     /// A finding is a value from a source reaching a sink's argument:
-    /// flow- and predicate-sensitive within a function, context-insensitive
-    /// across calls, no aliasing.
+    /// flow-, field- and predicate-sensitive within a function, call-site
+    /// matched across calls, may-alias by copy and address.
     Dataflow,
 }
 
@@ -527,6 +527,41 @@ fn cmd_explain(store: &Path, symbol: &str, limit: usize) -> Result<()> {
         if (mask == local_flow || mask == cfg_use) && info.kind != codegraph_core::SymbolKind::Local {
             continue;
         }
+        // The local views are flow-sensitive through their edge context:
+        // which definition a value came in by, and which definitions of
+        // the local reach each read.
+        if mask == local_flow {
+            let view = e.store().view();
+            let edges = match dir {
+                Direction::In => view.in_edges(id, mask)?,
+                Direction::Out => view.out_edges(id, mask)?,
+            };
+            let mut lines: Vec<(SymbolInfo, String)> = Vec::new();
+            for edge in edges {
+                if let Some(i) = e.info(edge.node)? {
+                    let note = match (dir, edge.context) {
+                        (Direction::In, Some(c)) => format!("  at line {c}"),
+                        (Direction::Out, Some(c)) if c.contains(',') => format!("  (definitions at lines {c})"),
+                        (Direction::Out, Some(c)) => format!("  (definition at line {c})"),
+                        _ => String::new(),
+                    };
+                    lines.push((i, note));
+                }
+            }
+            lines.sort_by(|a, b| (a.0.path.as_str(), a.0.line, a.1.as_str()).cmp(&(b.0.path.as_str(), b.0.line, b.1.as_str())));
+            lines.dedup_by(|a, b| a.0.id == b.0.id && a.1 == b.1);
+            if lines.is_empty() {
+                continue;
+            }
+            println!("\n  {label} ({}):", lines.len());
+            for (i, note) in lines.iter().take(limit) {
+                println!("    {:<10} {}{note}", tag(&e, i), show(i));
+            }
+            if lines.len() > limit {
+                println!("    ... and {} more", lines.len() - limit);
+            }
+            continue;
+        }
         let mut infos: Vec<SymbolInfo> = Vec::new();
         for h in e.neighbors(id, dir, mask)? {
             if let Some(i) = e.info(h.id)? {
@@ -539,6 +574,7 @@ fn cmd_explain(store: &Path, symbol: &str, limit: usize) -> Result<()> {
             }
         }
         // One line per symbol, however many edges reach it.
+        infos.sort_by(|a, b| (a.path.as_str(), a.line, a.id.get()).cmp(&(b.path.as_str(), b.line, b.id.get())));
         infos.dedup_by_key(|i| i.id);
         if infos.is_empty() {
             continue;
@@ -652,8 +688,9 @@ fn cmd_audit(store: &Path, kind: AuditKind, mode: AuditMode, limit: usize, exclu
         if mode == AuditMode::Dataflow {
             println!(
                 "\nmode: dataflow — a finding is a value from a source reaching a sink's \
-                 argument. Flow- and predicate-sensitive within a function, \
-                 context-insensitive across calls, no alias analysis."
+                 argument. Flow-, field- and predicate-sensitive within a function, \
+                 call-site-matched across calls (a value leaves a callee where it \
+                 entered), may-alias by copy and address; library calls by summary."
             );
         }
         for spec in presets::all() {

@@ -589,3 +589,32 @@ fn locals_are_stored_but_are_not_api() {
     assert_eq!(r.reextracted, 1);
     assert_matches_full(src.path(), &store, "a new local");
 }
+
+/// The stored local view is flow-sensitive through its edge contexts:
+/// `origin -> local` names the definition line, `local -> sink` the lines
+/// of the definitions that reach the read.
+#[test]
+fn local_flow_edges_carry_definition_lines() {
+    use codegraph_core::SymbolKind;
+    let src = tempfile::tempdir().unwrap();
+    write(src.path(), "f.py", "def f(a, b):\n    x = a\n    sink1(x)\n    x = b\n    sink2(x)\n    if a:\n        x = a\n    sink3(x)\n");
+    let (_sd, store) = full(src.path());
+    let v = store.view();
+    let x = v.ids().find(|&i| v.name(i).unwrap() == "x" && v.kind_raw(i).unwrap() == SymbolKind::Local.as_u8()).expect("local x");
+    let mut into: Vec<(String, String)> = v
+        .in_edges(x, Relation::LOCALS)
+        .unwrap()
+        .iter()
+        .map(|e| (v.name(e.node).unwrap().to_string(), e.context.unwrap_or("").to_string()))
+        .collect();
+    into.sort();
+    assert_eq!(into, [("a".to_string(), "2".to_string()), ("a".to_string(), "7".to_string()), ("b".to_string(), "4".to_string())]);
+    let mut out: Vec<(String, String)> = v
+        .out_edges(x, Relation::LOCALS)
+        .unwrap()
+        .iter()
+        .map(|e| (v.name(e.node).unwrap().to_string(), e.context.unwrap_or("").to_string()))
+        .collect();
+    out.sort();
+    assert_eq!(out, [("sink1".to_string(), "2".to_string()), ("sink2".to_string(), "4".to_string()), ("sink3".to_string(), "4,7".to_string())]);
+}

@@ -133,8 +133,9 @@ pub enum Mode {
     CallGraph,
     /// Value flow: does a value from a source (its return, or its
     /// parameters) reach a sink (its parameters, or an external callee)
-    /// through `flows_to` edges — flow- and predicate-sensitive within a
-    /// function, context-insensitive across calls, no aliasing.
+    /// through `flows_to` edges — flow-, field- and predicate-sensitive
+    /// within a function, call-site-matched across calls (a value leaves a
+    /// callee only where it entered), may-alias by copy and address.
     DataFlow,
 }
 
