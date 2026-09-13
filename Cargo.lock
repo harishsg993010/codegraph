@@ -216,6 +216,7 @@ dependencies = [
  "codegraph-resolve",
  "codegraph-security",
  "codegraph-store",
+ "tempfile",
 ]
 
 [[package]]

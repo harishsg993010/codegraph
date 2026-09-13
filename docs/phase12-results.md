@@ -6,34 +6,46 @@ can have changed and checks only those — O(changes), not O(files), on
 git's own stat cache. Without git, or when git cannot be sure, the
 store's file table does what git's index does: path, size, mtime and
 content hash per file, compared the same way. `.codegraphignore` (and
-`.gitignore`, git or no git) keeps files out of the graph. `codegraph
-watch` and the MCP server keep a store current as the tree changes, and
-a served graph swaps to the new generation without a restart. 356 tests,
-clippy-clean.
+`.gitignore`, git or no git) keeps files out of the graph. And nothing
+has to be run by hand: every command takes a store or a source tree,
+indexes a tree on first use, and brings the store up to date before it
+answers; `codegraph watch` and the MCP server keep a store current
+between commands, and a served graph swaps to the new generation without
+a restart. 359 tests, clippy-clean.
 
 ---
 
 ## What it looks like
 
 ```
-$ codegraph index ./gitea
-indexed 3342 files in 15.9s (210 files/s)
-  352264 symbols, 2299027 edges, 1 segment(s)
-  ...
-  git: C:/.../targets/gitea at 4f307ec685 (1 dirty); changes are found through git; store added to .git/info/exclude
+$ codegraph deep ./gitea "rate limit" kind:function -n 1
+indexed ./gitea in 18.0s: 3342 files, 352264 symbols, 2299027 edges (store: ./gitea/.codegraph)
+1 hit(s) for terms ["rate limit"] with filters Kind(Function) (405 ms)
+  0.95  IsRateLimitError (services/migrations/error.go:17) [function]
 
 $ vi modules/util/truncate.go
-$ codegraph index ./gitea
-indexed 1 files in 0.7s (1 files/s)
-  incremental (git): 1 changed, 0 deleted, 1 re-extracted of 3342 scanned; index overlay built
+$ codegraph explain ./gitea EllipsisDisplayString
+updated in 0.7s: 1 changed, 0 deleted, 1 re-extracted (git)
+EllipsisDisplayString (modules/util/truncate.go:51) [function]
+  ...
 
+$ codegraph search ./gitea Ellipsis        # nothing changed: 0.7 s end to end, nothing said
+19 matches
+  ...
+```
+
+The first line of stderr is the bootstrap; the second is the sync every
+command does before answering. `(git)`: it ran `git rev-parse` and `git
+status` and compared nothing else. A no-op costs ≈ 0.25 s of git and
+≈ 0.3 s of opening a 120 MB store and its index. `codegraph index` still
+exists for an explicit run and prints the full report:
+
+```
 $ codegraph index ./gitea
 indexed 0 files in 0.5s (0 files/s)
   up to date (3342 files unchanged, by git); index overlay current
+  git: C:/.../targets/gitea at 4f307ec685 (1 dirty); changes are found through git
 ```
-
-`by git`: the update ran `git rev-parse` and `git status` and compared
-nothing else. The 0.5 s is opening a 120 MB store and its index.
 
 ```
 $ codegraph watch ./gitea
@@ -101,6 +113,22 @@ tree inside a work tree, the store directory is added to
 `.git/info/exclude` unless some rule already ignores it — local to the
 clone, never committed, and only once.
 
+**Every command syncs** (`watch.rs`: `locate`, `ensure_current`). What
+a command is given is resolved — a store directory, a tree with a
+`.codegraph` inside, or a tree with none — and brought current: a fresh
+tree is indexed (waiting on the store's lock if another process is
+already doing it), a store that records its tree is synced unless
+another process holds the lock (then it is read as it is, and stderr
+says so), a store from before this version that records no tree is read
+as it is. The lock is the OS's advisory lock on `<store>/LOCK`, released
+when the holder exits however it exits; `index`, `compact`, `watch`, the
+server's sync thread and the pre-query sync all take it, readers never
+do — a manifest commit is atomic and segments are written once, so a
+reader always sees a whole generation
+(`a_locked_store_is_read_as_it_is`,
+`a_source_tree_is_indexed_on_first_use_and_kept_current_after`, through
+the built binary).
+
 **Watching** (`watch.rs`). `TreeWatcher` is a recursive `notify` watch
 with a debounce: events are gathered until the tree has been quiet for
 the configured period, then the relevant paths are delivered as one
@@ -130,6 +158,8 @@ way.
 |---|---|
 | full index | 15.9–20.9 s (unchanged; the walk is 0.2 s of it) |
 | no-op update, by git | 0.5–0.6 s, of which `git` ≈ 0.25 s and opening the store ≈ 0.3 s |
+| a query on an unchanged tree, end to end (`search`) | 0.7 s; 0.4 s with `--no-sync` |
+| a query after a one-file edit, end to end (`explain`) | 1.0 s |
 | one-file edit, by git | 0.7 s |
 | files indexed | 3,342 before and after — Gitea's `.gitignore` excludes nothing the skip list did not |
 | base + deltas vs fresh, after a git-detected edit and its reversal | identical, 0 dangling |
@@ -145,6 +175,9 @@ way.
   restored with its mtime and size intact within git's racy-git window is
   the same edge case git itself has, and the next walk (any fallback
   condition) re-hashes everything.
+- The pre-query sync costs a no-op update on every command — ≈ 0.25 s of
+  git on Gitea, a walk of the tree without git. `--no-sync` skips it; a
+  running `watch` or server makes it a no-op that finds nothing.
 - `watch` follows one tree; a store indexed from a different root than
   the one watched falls back to the walk every round and says so
   (`scan`).

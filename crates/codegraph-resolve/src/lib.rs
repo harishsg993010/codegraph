@@ -37,7 +37,7 @@ use codegraph_store::{
 pub use diff::{Change, ChangeKind, DiffOptions, DiffReport, Hit, Named, diff_tree};
 pub use pipeline::{IndexReport, UpdateReport, index_tree, scan, update_tree};
 pub use tree::{GitRepo, GitState, IGNORE_FILE, TreeState, detect_git, exclude_store_from_git};
-pub use watch::{TreeWatcher, sync};
+pub use watch::{Ensured, Located, TreeWatcher, ensure_current, locate, sync};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BuildStats {

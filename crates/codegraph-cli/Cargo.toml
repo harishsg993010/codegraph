@@ -17,4 +17,7 @@ codegraph-extract.workspace = true
 codegraph-resolve.workspace = true
 codegraph-security.workspace = true
 anyhow.workspace = true
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+
+[dev-dependencies]
+tempfile = "3"

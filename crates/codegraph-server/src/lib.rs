@@ -234,8 +234,9 @@ impl CodeGraph {
                 while let Some(batch) = watcher.next() {
                     let t = std::time::Instant::now();
                     match codegraph_resolve::sync(&src, &store_dir, &repo, &codegraph_store::CompactPolicy::default()) {
-                        Ok((r, _)) if r.changed == 0 && r.deleted == 0 && r.incremental => {}
-                        Ok((r, _)) => match open_store(&store_dir) {
+                        Ok(None) => eprintln!("another process is updating the store; skipped this round"),
+                        Ok(Some((r, _))) if r.changed == 0 && r.deleted == 0 && r.incremental => {}
+                        Ok(Some((r, _))) => match open_store(&store_dir) {
                             Ok(e) => {
                                 g.replace(e);
                                 eprintln!(

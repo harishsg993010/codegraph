@@ -36,10 +36,23 @@ async fn main() -> Result<()> {
         i += 1;
     }
     let Some(dir) = dir else {
-        eprintln!("usage: codegraph-mcp <store-dir> [--no-watch] [--debounce-ms N]");
+        eprintln!("usage: codegraph-mcp <store-or-source-dir> [--no-watch] [--debounce-ms N]");
         std::process::exit(2);
     };
-    let root = std::path::PathBuf::from(dir);
+    let given = std::path::PathBuf::from(dir);
+
+    // A source tree is indexed on first use; a store that knows its tree
+    // is brought up to date before the first answer.
+    let ensured = codegraph_resolve::ensure_current(&given, "", &codegraph_store::CompactPolicy::default())
+        .map_err(|e| anyhow::anyhow!("bringing {} up to date: {e}", given.display()))?;
+    if let Some(r) = &ensured.report {
+        if ensured.located.fresh || !r.incremental {
+            eprintln!("indexed {}: {} files, {} symbols, {} edges", given.display(), r.reextracted, r.symbols, r.edges);
+        } else if r.changed > 0 || r.deleted > 0 {
+            eprintln!("updated: {} changed, {} deleted, {} re-extracted ({})", r.changed, r.deleted, r.reextracted, r.detection);
+        }
+    }
+    let root = ensured.located.store_dir;
 
     let engine = open_store(&root)?;
     eprintln!("codegraph-mcp ready: {} symbols from {}", engine.symbol_count(), root.display());

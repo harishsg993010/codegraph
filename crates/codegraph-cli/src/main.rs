@@ -22,10 +22,17 @@ type Index = Layered<MappedIndex>;
 
 #[derive(Parser)]
 #[command(name = "codegraph", version, about = "A code-index database")]
+#[command(long_about = "A code-index database.\n\nEvery command takes a store directory or a source tree. A source tree with no store is indexed on first use (into <tree>/.codegraph); a store that knows its tree is brought up to date before every answer, through git when git is there. Nothing has to be run by hand to keep a graph current.")]
 struct Cli {
+    /// Answer from the store as it is; do not bring it up to date first.
+    #[arg(long, global = true, env = "CODEGRAPH_NO_SYNC")]
+    no_sync: bool,
     #[command(subcommand)]
     command: Command,
 }
+
+/// Set once from the flag; read by every open.
+static NO_SYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(Subcommand)]
 enum Command {
@@ -190,6 +197,7 @@ enum AuditMode {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    NO_SYNC.store(cli.no_sync, std::sync::atomic::Ordering::Relaxed);
     match cli.command {
         Command::Index { source, store, repo, full } => cmd_index(&source, store, &repo, full),
         Command::Watch { source, store, debounce_ms } => cmd_watch(&source, store, debounce_ms),
@@ -216,16 +224,50 @@ fn main() -> Result<()> {
     }
 }
 
-/// Open a store and its index for reading.
+/// Open what a command was given — a store, or a source tree — current.
 ///
-/// Rebuilds the index when it is missing or stale rather than failing: a stale
-/// index is a recoverable state, and making the user run a separate command to
-/// fix it is friction for no safety gain. Rebuilding is announced, because it
-/// is slow and the user should know why.
-fn open(store_dir: &Path) -> Result<Engine<Index>> {
-    let store = Store::open(store_dir)
+/// A source tree with no store is indexed first (once; the store lives in
+/// `<tree>/.codegraph`). A store that records its tree is synced before it
+/// is read: through git when git is there, by a walk otherwise, and only
+/// what changed is re-indexed. Both are reported on stderr, so the answer
+/// on stdout stays the answer. `--no-sync` reads the store as it is.
+/// Rebuilding a missing index is announced too, because it is slow and
+/// the user should know why.
+fn open(path: &Path) -> Result<Engine<Index>> {
+    let store_dir = if NO_SYNC.load(std::sync::atomic::Ordering::Relaxed) {
+        codegraph_resolve::locate(path)?.store_dir
+    } else {
+        let t = Instant::now();
+        let ensured = codegraph_resolve::ensure_current(path, "", &CompactPolicy::default())
+            .with_context(|| format!("bringing {} up to date", path.display()))?;
+        match (&ensured.report, ensured.skipped) {
+            (Some(r), _) if !r.incremental => eprintln!(
+                "{} {} in {:.1}s: {} files, {} symbols, {} edges (store: {})",
+                if ensured.located.fresh { "indexed" } else { "updated: rebuilt" },
+                ensured.located.source.as_deref().unwrap_or(path).display(),
+                t.elapsed().as_secs_f64(),
+                r.reextracted,
+                r.symbols,
+                r.edges,
+                ensured.located.store_dir.display()
+            ),
+            (Some(r), _) if r.changed > 0 || r.deleted > 0 => eprintln!(
+                "updated in {:.1}s: {} changed, {} deleted, {} re-extracted ({})",
+                t.elapsed().as_secs_f64(),
+                r.changed,
+                r.deleted,
+                r.reextracted,
+                r.detection
+            ),
+            (Some(_), _) => {}
+            (None, Some(why)) if why != "the store does not record its source tree" => eprintln!("not updated: {why}"),
+            (None, _) => {}
+        }
+        ensured.located.store_dir
+    };
+    let store = Store::open(&store_dir)
         .with_context(|| format!("opening store at {}", store_dir.display()))?;
-    let (index, how) = open_or_build(&store, store_dir)?;
+    let (index, how) = open_or_build(&store, &store_dir)?;
     match how {
         Opened::Base | Opened::Overlaid => {}
         Opened::OverlayBuilt => eprintln!("index overlay was missing; built it"),
@@ -366,6 +408,11 @@ fn cmd_index(source: &Path, store: Option<PathBuf>, repo: &str, full: bool) -> R
     let store_dir = store.unwrap_or_else(|| source.join(".codegraph"));
     let t = Instant::now();
     let existing = store_dir.join("CURRENT").exists();
+    // One writer at a time: a watcher or a query syncing this store waits
+    // for us, and we for it.
+    let _lock = codegraph_store::WriteLock::acquire(&store_dir, std::time::Duration::from_secs(600))
+        .with_context(|| format!("locking {}", store_dir.display()))?
+        .ok_or_else(|| anyhow::anyhow!("another process has held the store's lock for ten minutes"))?;
     let mut s = Store::open_or_create(&store_dir)?;
 
     // An existing store is brought up to date; a new one, or `--full`, is
@@ -447,11 +494,13 @@ fn git_note(source: &Path, store_dir: &Path, bootstrap: bool) -> String {
         &g.head[..g.head.len().min(10)],
         g.dirty.len()
     );
-    if bootstrap
-        && let Some(repo) = codegraph_resolve::detect_git(source)
-        && codegraph_resolve::exclude_store_from_git(&repo, store_dir)
-    {
-        note.push_str("; store added to .git/info/exclude");
+    if bootstrap && let Some(repo) = codegraph_resolve::detect_git(source) {
+        // Done by the index itself; said here so the user knows.
+        let excluded = std::path::absolute(store_dir).is_ok_and(|s| s.strip_prefix(std::path::absolute(&repo.toplevel).unwrap_or_default()).is_ok())
+            && std::fs::read_to_string(repo.toplevel.join(".git/info/exclude")).is_ok_and(|t| t.contains("# codegraph store"));
+        if excluded {
+            note.push_str("; store is in .git/info/exclude");
+        }
     }
     note
 }
@@ -471,7 +520,15 @@ fn cmd_watch(source: &Path, store: Option<PathBuf>, debounce_ms: u64) -> Result<
     let watcher = TreeWatcher::new(source, &store_dir, Duration::from_millis(debounce_ms))
         .with_context(|| format!("watching {}", source.display()))?;
     let t = Instant::now();
-    let (r, _) = sync(source, &store_dir, "", &policy).with_context(|| format!("indexing {}", source.display()))?;
+    let (r, _) = loop {
+        match sync(source, &store_dir, "", &policy).with_context(|| format!("indexing {}", source.display()))? {
+            Some(x) => break x,
+            None => {
+                println!("waiting for another process to release {}", store_dir.display());
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+    };
     println!(
         "[{}] {} — {} symbols, {} edges ({:.1}s)",
         stamp(),
@@ -485,7 +542,8 @@ fn cmd_watch(source: &Path, store: Option<PathBuf>, debounce_ms: u64) -> Result<
     while let Some(batch) = watcher.next() {
         let t = Instant::now();
         match sync(source, &store_dir, "", &policy) {
-            Ok((r, _)) if r.incremental && r.changed == 0 && r.deleted == 0 => {
+            Ok(None) => println!("[{}] another process is updating the store; skipped", stamp()),
+            Ok(Some((r, _))) if r.incremental && r.changed == 0 && r.deleted == 0 => {
                 let shown: Vec<String> = batch.iter().take(3).map(|p| p.strip_prefix(source).unwrap_or(p).to_string_lossy().replace('\\', "/")).collect();
                 println!(
                     "[{}] {} event path(s) ({}{}), nothing changed ({}, {:.2}s)",
@@ -497,7 +555,7 @@ fn cmd_watch(source: &Path, store: Option<PathBuf>, debounce_ms: u64) -> Result<
                     t.elapsed().as_secs_f64()
                 );
             }
-            Ok((r, _)) => {
+            Ok(Some((r, _))) => {
                 let mut what: Vec<&str> = r.changed_paths.iter().chain(&r.deleted_paths).map(String::as_str).collect();
                 what.truncate(5);
                 println!(
@@ -522,6 +580,9 @@ fn cmd_watch(source: &Path, store: Option<PathBuf>, debounce_ms: u64) -> Result<
 
 fn cmd_compact(store_dir: &Path) -> Result<()> {
     let t = Instant::now();
+    let store_dir = &codegraph_resolve::locate(store_dir)?.store_dir;
+    let _lock = codegraph_store::WriteLock::acquire(store_dir, std::time::Duration::from_secs(600))?
+        .ok_or_else(|| anyhow::anyhow!("another process has held the store's lock for ten minutes"))?;
     let mut s = Store::open(store_dir)
         .with_context(|| format!("opening store at {}", store_dir.display()))?;
     match codegraph_store::compact(&mut s)? {
@@ -766,7 +827,19 @@ fn cmd_affected(store: &Path, symbol: &str, depth: u32, limit: usize) -> Result<
 
 fn cmd_diff(source: &Path, store: Option<PathBuf>, repo: &str, depth: u32, limit: usize, fail_on_break: bool) -> Result<()> {
     use codegraph_resolve::DiffOptions;
-    let store_dir = store.unwrap_or_else(|| source.join(".codegraph"));
+    let store_dir = match store {
+        Some(s) => s,
+        None => {
+            // No store yet: there is nothing to diff against, so index now
+            // and say so; the next diff has a baseline.
+            let ensured = codegraph_resolve::ensure_current(source, repo, &CompactPolicy::default())?;
+            if ensured.located.fresh {
+                eprintln!("indexed {} into {}; nothing to compare against yet", source.display(), ensured.located.store_dir.display());
+                return Ok(());
+            }
+            ensured.located.store_dir
+        }
+    };
     let t = Instant::now();
     let opts = DiffOptions { repo: repo.to_string(), depth, ..DiffOptions::default() };
     let r = codegraph_resolve::diff_tree(source, &store_dir, &opts)?;
@@ -946,6 +1019,7 @@ fn cmd_stats(store: &Path) -> Result<()> {
 }
 
 fn cmd_verify(store: &Path) -> Result<()> {
+    let store = &codegraph_resolve::locate(store)?.store_dir;
     let s = Store::open(store)?;
     s.verify()?;
     println!("segments: ok ({} live)", s.manifest().segments.len());

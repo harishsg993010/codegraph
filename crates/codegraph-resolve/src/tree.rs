@@ -279,7 +279,9 @@ pub fn git_changed_between(root: &Path, repo: &GitRepo, old: &str, new: &str) ->
 /// already ignored. Local to this clone, never committed, exactly what
 /// git's own tooling does with its scratch directories.
 pub fn exclude_store_from_git(repo: &GitRepo, store_dir: &Path) -> bool {
-    let Ok(rel) = store_dir.strip_prefix(&repo.toplevel) else { return false };
+    let store_dir = std::path::absolute(store_dir).unwrap_or_else(|_| store_dir.to_path_buf());
+    let toplevel = std::path::absolute(&repo.toplevel).unwrap_or_else(|_| repo.toplevel.clone());
+    let Ok(rel) = store_dir.strip_prefix(&toplevel) else { return false };
     let rel = rel.to_string_lossy().replace('\\', "/");
     if rel.is_empty() {
         return false;

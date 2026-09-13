@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use codegraph_extract::lang;
 use codegraph_index::{OpenError, Opened, open_or_build};
-use codegraph_store::{CompactPolicy, Store};
+use codegraph_store::{CompactPolicy, Store, StoreError, WriteLock};
+
+use crate::tree::TreeState;
 use notify::{RecursiveMode, Watcher};
 
 use crate::tree::{SKIP_DIRS, is_ignore_file};
@@ -123,10 +125,86 @@ fn collect(
 }
 
 /// One round: the store brought up to date with `root`, the index with
-/// the store. Returns the update and what the index needed.
-pub fn sync(root: &Path, store_dir: &Path, repo: &str, policy: &CompactPolicy) -> std::result::Result<(UpdateReport, Opened), OpenError> {
+/// the store. `Ok(None)` when another process holds the store's write
+/// lock — it is doing this same work, and the caller reads what is there.
+pub fn sync(root: &Path, store_dir: &Path, repo: &str, policy: &CompactPolicy) -> std::result::Result<Option<(UpdateReport, Opened)>, OpenError> {
+    let Some(_lock) = WriteLock::try_acquire(store_dir).map_err(|e| StoreError::io("locking the store", e))? else {
+        return Ok(None);
+    };
     let mut store = Store::open_or_create(store_dir)?;
     let report = update_tree(root, &mut store, repo, policy)?;
     let (_, how) = open_or_build(&store, store_dir)?;
-    Ok((report, how))
+    Ok(Some((report, how)))
+}
+
+/// What a path given to a command names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Located {
+    /// The store directory: the path itself, its `.codegraph`, or the
+    /// `.codegraph` a source tree will get.
+    pub store_dir: PathBuf,
+    /// The tree the store follows, when known: recorded in the store, or
+    /// the directory given.
+    pub source: Option<PathBuf>,
+    /// No store yet: the path is a source tree to index on first use.
+    pub fresh: bool,
+}
+
+/// Resolve what a command was given: a store directory, a source tree
+/// with a store inside it, or a source tree with none yet.
+pub fn locate(path: &Path) -> std::io::Result<Located> {
+    let is_store = |d: &Path| d.join("CURRENT").is_file();
+    if is_store(path) {
+        let source = TreeState::load(path).map(|t| t.root_path()).filter(|r| r.is_dir());
+        return Ok(Located { store_dir: path.to_path_buf(), source, fresh: false });
+    }
+    if !path.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} is neither a store nor a source tree", path.display()),
+        ));
+    }
+    let inner = path.join(".codegraph");
+    if is_store(&inner) {
+        let source = TreeState::load(&inner).map(|t| t.root_path()).filter(|r| r.is_dir()).unwrap_or_else(|| path.to_path_buf());
+        return Ok(Located { store_dir: inner, source: Some(source), fresh: false });
+    }
+    Ok(Located { store_dir: inner, source: Some(path.to_path_buf()), fresh: true })
+}
+
+/// What [`ensure_current`] did.
+#[derive(Debug)]
+pub struct Ensured {
+    pub located: Located,
+    /// The update that ran, if one did.
+    pub report: Option<UpdateReport>,
+    /// Why no update ran, when none did and the store has a tree.
+    pub skipped: Option<&'static str>,
+}
+
+/// The store a command should read, brought up to date first: a source
+/// tree with no store is indexed (waiting for another process already
+/// doing so), a store that knows its tree is synced unless another
+/// process is syncing it now, a store that knows no tree is read as is.
+pub fn ensure_current(path: &Path, repo: &str, policy: &CompactPolicy) -> std::result::Result<Ensured, OpenError> {
+    let located = locate(path).map_err(|e| StoreError::io("locating the store", e))?;
+    let Some(source) = located.source.clone() else {
+        return Ok(Ensured { located, report: None, skipped: Some("the store does not record its source tree") });
+    };
+    if located.fresh {
+        // First use: index, and if someone else is indexing this same
+        // tree right now, wait for them rather than race.
+        let lock = WriteLock::acquire(&located.store_dir, Duration::from_secs(600)).map_err(|e| StoreError::io("locking the store", e))?;
+        if lock.is_none() {
+            return Ok(Ensured { located, report: None, skipped: Some("another process has held the store's lock for ten minutes") });
+        }
+        let mut store = Store::open_or_create(&located.store_dir)?;
+        let report = update_tree(&source, &mut store, repo, policy)?;
+        open_or_build(&store, &located.store_dir)?;
+        return Ok(Ensured { located, report: Some(report), skipped: None });
+    }
+    match sync(&source, &located.store_dir, repo, policy)? {
+        Some((report, _)) => Ok(Ensured { located, report: Some(report), skipped: None }),
+        None => Ok(Ensured { located, report: None, skipped: Some("another process is updating it") }),
+    }
 }

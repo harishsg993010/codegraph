@@ -133,7 +133,14 @@ pub fn index_tree(root: &Path, store: &mut Store, repo: &str) -> Result<IndexRep
     // What the tree looked like, for the next update: captured before the
     // extraction would be exact; captured after, a file edited during the
     // index is dirty now and will be re-checked next time. Either is safe.
-    let _ = TreeState::capture(root, repo).save(store.root());
+    let state = TreeState::capture(root, repo);
+    let _ = state.save(store.root());
+    // A full index is the bootstrap: keep the store out of the repository.
+    if state.git.is_some()
+        && let Some(r) = crate::tree::detect_git(root)
+    {
+        crate::tree::exclude_store_from_git(&r, store.root());
+    }
     Ok(IndexReport {
         scanned: scan.files.len(),
         extracted: files.len(),
