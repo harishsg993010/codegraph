@@ -165,3 +165,37 @@ fn the_shipped_starter_rules_parse() {
         assert!(!r.message.is_empty(), "{}: a starter rule says what it finds", r.id);
     }
 }
+
+#[test]
+fn every_member_of_a_package_can_be_a_sink() {
+    let src = tempfile::tempdir().unwrap();
+    project(src.path());
+    let (_sd, e) = build(src.path());
+    let yaml = r#"
+rules:
+  - id: any-subprocess
+    pattern-sources: [request]
+    pattern-sinks: ["subprocess.*"]
+"#;
+    let rs = results(&e, yaml);
+    let a = rs[0].analysis.as_ref().unwrap();
+    assert!(a.sinks >= 1, "{}", render_text(&rs, &|s| s.name.clone()));
+    assert!(a.findings.iter().any(|f| f.sink.name == "Popen"), "{}", render_text(&rs, &|s| s.name.clone()));
+}
+
+#[test]
+fn the_codegraph_rule_set_parses() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../rules/codegraph");
+    let rules = codegraph_security::load_rules(&dir).expect("codegraph rules parse");
+    assert!(rules.len() >= 100, "{}", rules.len());
+    let mut langs = std::collections::BTreeSet::new();
+    for r in &rules {
+        RuleSpec::from_rule(r).unwrap_or_else(|e| panic!("{}: {e}", r.id));
+        assert!(!r.message.is_empty() && !r.languages.is_empty(), "{}", r.id);
+        assert!(r.metadata.contains_key("cwe"), "{}: every rule names its CWE", r.id);
+        langs.extend(r.languages.iter().cloned());
+    }
+    for l in ["python", "javascript", "typescript", "java", "go", "ruby", "csharp", "c", "cpp", "rust"] {
+        assert!(langs.contains(l), "no rules for {l}");
+    }
+}

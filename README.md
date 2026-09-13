@@ -149,7 +149,10 @@ A `pattern` names a symbol: `Name`, `Name*`, `*Name`, `*Name*`,
 a function or library call (its arguments). `codegraph audit ./repo`
 reports per rule with severity and message; `--format json` for tooling,
 `--fail-on ERROR` for CI. `rules/starter.yaml` is a starting point to
-copy; `docs/phase13-results.md` says what a rule can and cannot express.
+copy; `rules/codegraph/` is the rule set proper — 108 rules over Python,
+JavaScript/TypeScript, Java, Go, Ruby, C#, C/C++ and Rust, one file per
+language, Apache-2.0; `codegraph rules check <file-or-dir>`
+validates a rule set.
 
 ## What is in the graph
 
@@ -210,6 +213,7 @@ indexed on first use and synced before every answer.
 | `audit <store> [--rules file-or-dir] [--format text\|json] [--fail-on SEVERITY] [--max-hops n] [--context-depth n]` | Taint analyses from **rule files** (YAML, Semgrep-like: `pattern-sources`, `pattern-sinks`, `pattern-sanitizers`, `pattern-not`, `paths`, `languages`, `severity`, `metadata`); `<tree>/.codegraph-rules.yaml` and `.codegraph-rules/` are read without asking, the built-in starter specs run when there are no rules (or with `--presets`). `mode: taint` (default): a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. `mode: callgraph`: a call path from a source to a sink function. `--fail-on ERROR` for CI. |
 | `deps <store> [package]` | Which of our code reaches an external package. |
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
+| `rules check <file-or-dir>` | Parse and validate rule files; one line per rule with what it names. |
 | `--no-sync` (any command; or `CODEGRAPH_NO_SYNC=1`) | Answer from the store as it is, without bringing it up to date first. |
 
 `codegraph-mcp <store> [--no-watch] [--debounce-ms n]` serves the same

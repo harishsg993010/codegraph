@@ -198,6 +198,9 @@ enum Command {
         #[arg(long)]
         context_depth: Option<usize>,
     },
+    /// Rule files: parse and validate them.
+    #[command(subcommand)]
+    Rules(RulesCommand),
     /// Which of our code reaches a package.
     Deps {
         store: PathBuf,
@@ -220,6 +223,15 @@ enum AuditKind {
     All,
     Taint,
     Entrypoints,
+}
+
+#[derive(Subcommand)]
+enum RulesCommand {
+    /// Parse and validate a rule file or directory; say what each rule
+    /// names.
+    Check {
+        path: PathBuf,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -263,6 +275,7 @@ fn main() -> Result<()> {
         Command::Diff { source, repo, depth, max_fanout, max_impact, limit, fail_on_break } => {
             cmd_diff(&source, &repo, depth, max_fanout, max_impact, limit, fail_on_break)
         }
+        Command::Rules(RulesCommand::Check { path }) => cmd_rules_check(&path),
         Command::Deps { store, package, limit } => cmd_deps(&store, package.as_deref(), limit),
         Command::Stats { store } => cmd_stats(&store),
         Command::Verify { store } => cmd_verify(&store),
@@ -1045,6 +1058,26 @@ fn cmd_audit(
         && w >= threshold
     {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn cmd_rules_check(path: &Path) -> Result<()> {
+    let rules = codegraph_security::load_rules(path).map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{} rule(s) in {}", rules.len(), path.display());
+    for r in &rules {
+        let spec = codegraph_security::RuleSpec::from_rule(r).map_err(|m| anyhow::anyhow!("rule {:?}: {m}", r.id))?;
+        println!(
+            "  {} [{}] {} — {} source(s), {} sink(s), {} sanitiser(s){}{}",
+            r.id,
+            r.severity.as_str(),
+            if spec.spec.mode == codegraph_security::Mode::DataFlow { "taint" } else { "callgraph" },
+            spec.spec.sources.len(),
+            spec.spec.sinks.len(),
+            spec.spec.sanitizers.len(),
+            if r.languages.is_empty() { String::new() } else { format!(", {}", r.languages.join("/")) },
+            if r.message.is_empty() { String::new() } else { format!(": {}", r.message) }
+        );
     }
     Ok(())
 }

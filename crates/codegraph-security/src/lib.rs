@@ -524,6 +524,10 @@ impl<'a, I: IndexQuery> Security<'a, I> {
                     name == *method
                         && view.in_edges(id, own).ok().into_iter().flatten().any(|e| view.name(e.node).is_ok_and(|o| o.to_lowercase() == *type_name))
                 }
+                // `handle.*`: every parameter of `handle`.
+                Matcher::MembersOf(owner) => {
+                    view.in_edges(id, own).ok().into_iter().flatten().any(|e| view.name(e.node).is_ok_and(|o| o.to_lowercase() == *owner))
+                }
                 Matcher::InPath(_) => false,
             });
             if hit {

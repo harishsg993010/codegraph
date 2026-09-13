@@ -1,0 +1,360 @@
+# codegraph rules — C and C++. Apache-2.0.
+#
+# Untrusted input in C arrives through argv, environment, stdin, sockets
+# and files; the sinks are the libc calls that trust their arguments. The
+# flow through `strcpy(buf, x)` is followed by summary (the first argument
+# is written from the second).
+
+rules:
+  - id: c.command-injection
+    message: External input reaches a shell or exec
+    severity: ERROR
+    languages: [c, cpp]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: argv
+      - pattern: getenv
+      - pattern: secure_getenv
+      - pattern: fgets
+      - pattern: gets
+      - pattern: getline
+      - pattern: scanf
+      - pattern: fscanf
+      - pattern: read
+      - pattern: recv
+      - pattern: recvfrom
+      - pattern: recvmsg
+      - pattern: readline
+      - pattern: getchar
+      - pattern: fread
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: system
+      - pattern: popen
+      - pattern: _popen
+      - pattern: execl
+      - pattern: execle
+      - pattern: execlp
+      - pattern: execv
+      - pattern: execve
+      - pattern: execvp
+      - pattern: execvpe
+      - pattern: posix_spawn
+      - pattern: posix_spawnp
+      - pattern: ShellExecute
+      - pattern: ShellExecuteA
+      - pattern: ShellExecuteW
+      - pattern: ShellExecuteEx
+      - pattern: CreateProcess
+      - pattern: CreateProcessA
+      - pattern: CreateProcessW
+      - pattern: WinExec
+      - pattern: _spawnl
+      - pattern: _spawnv
+      - pattern: _execl
+      - pattern: _execv
+      - pattern: QProcess.start
+      - pattern: QProcess.execute
+      - pattern: boost::process::system
+      - pattern: boost::process::child
+
+  - id: c.format-string
+    message: External input reaches a format string
+    severity: ERROR
+    languages: [c, cpp]
+    metadata: { cwe: CWE-134, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: argv
+      - pattern: getenv
+      - pattern: fgets
+      - pattern: gets
+      - pattern: getline
+      - pattern: read
+      - pattern: recv
+      - pattern: recvfrom
+      - pattern: fread
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: printf
+      - pattern: fprintf
+      - pattern: sprintf
+      - pattern: snprintf
+      - pattern: vprintf
+      - pattern: vfprintf
+      - pattern: vsprintf
+      - pattern: vsnprintf
+      - pattern: dprintf
+      - pattern: syslog
+      - pattern: vsyslog
+      - pattern: err
+      - pattern: errx
+      - pattern: warn
+      - pattern: warnx
+      - pattern: wprintf
+      - pattern: fwprintf
+      - pattern: swprintf
+      - pattern: asprintf
+      - pattern: vasprintf
+
+  - id: c.buffer-overflow
+    message: External input reaches an unbounded copy or concatenation
+    severity: ERROR
+    languages: [c, cpp]
+    metadata: { cwe: CWE-120, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: argv
+      - pattern: getenv
+      - pattern: fgets
+      - pattern: gets
+      - pattern: getline
+      - pattern: read
+      - pattern: recv
+      - pattern: recvfrom
+      - pattern: fread
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: strcpy
+      - pattern: strcat
+      - pattern: sprintf
+      - pattern: vsprintf
+      - pattern: gets
+      - pattern: wcscpy
+      - pattern: wcscat
+      - pattern: lstrcpy
+      - pattern: lstrcat
+      - pattern: memcpy
+      - pattern: memmove
+      - pattern: strncpy
+      - pattern: strncat
+      - pattern: alloca
+      - pattern: scanf
+      - pattern: sscanf
+    pattern-sanitizers:
+      - pattern: strnlen
+      - pattern: strlcpy
+      - pattern: strlcat
+      - pattern: snprintf
+      - pattern: strncpy_s
+      - pattern: strcpy_s
+      - pattern: memcpy_s
+
+  - id: c.path-traversal
+    message: External input reaches a file open or path operation
+    severity: WARNING
+    languages: [c, cpp]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: argv
+      - pattern: getenv
+      - pattern: fgets
+      - pattern: read
+      - pattern: recv
+      - pattern: recvfrom
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: fopen
+      - pattern: fopen64
+      - pattern: freopen
+      - pattern: open
+      - pattern: open64
+      - pattern: openat
+      - pattern: creat
+      - pattern: unlink
+      - pattern: unlinkat
+      - pattern: remove
+      - pattern: rename
+      - pattern: mkdir
+      - pattern: rmdir
+      - pattern: chmod
+      - pattern: chown
+      - pattern: stat
+      - pattern: lstat
+      - pattern: access
+      - pattern: opendir
+      - pattern: readlink
+      - pattern: symlink
+      - pattern: link
+      - pattern: truncate
+      - pattern: dlopen
+      - pattern: LoadLibrary
+      - pattern: LoadLibraryA
+      - pattern: LoadLibraryW
+      - pattern: CreateFile
+      - pattern: CreateFileA
+      - pattern: CreateFileW
+      - pattern: DeleteFile
+      - pattern: DeleteFileA
+      - pattern: DeleteFileW
+      - pattern: std::ifstream
+      - pattern: std::ofstream
+      - pattern: std::fstream
+      - pattern: ifstream
+      - pattern: ofstream
+      - pattern: fstream
+      - pattern: std::filesystem::remove
+      - pattern: std::filesystem::remove_all
+      - pattern: std::filesystem::rename
+      - pattern: std::filesystem::copy
+      - pattern: filesystem::path
+      - pattern: QFile
+      - pattern: QFile.open
+      - pattern: QDir.remove
+    pattern-sanitizers:
+      - pattern: realpath
+      - pattern: basename
+      - pattern: canonicalize_file_name
+      - pattern: std::filesystem::canonical
+      - pattern: std::filesystem::weakly_canonical
+      - pattern: filesystem::canonical
+      - pattern: PathCanonicalize
+      - pattern: GetFullPathName
+      - pattern: "*sanitize*"
+
+  - id: c.sql-injection
+    message: External input reaches a SQL execution call
+    severity: ERROR
+    languages: [c, cpp]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: argv
+      - pattern: getenv
+      - pattern: fgets
+      - pattern: read
+      - pattern: recv
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: sqlite3_exec
+      - pattern: sqlite3_prepare
+      - pattern: sqlite3_prepare_v2
+      - pattern: sqlite3_prepare_v3
+      - pattern: sqlite3_get_table
+      - pattern: mysql_query
+      - pattern: mysql_real_query
+      - pattern: mysql_stmt_prepare
+      - pattern: PQexec
+      - pattern: PQexecParams
+      - pattern: PQprepare
+      - pattern: PQsendQuery
+      - pattern: SQLExecDirect
+      - pattern: SQLExecDirectA
+      - pattern: SQLExecDirectW
+      - pattern: SQLPrepare
+      - pattern: OCIStmtPrepare
+      - pattern: OCIStmtPrepare2
+      - pattern: QSqlQuery.exec
+      - pattern: QSqlQuery.prepare
+      - pattern: soci::session.prepare
+    pattern-sanitizers:
+      - pattern: mysql_real_escape_string
+      - pattern: mysql_real_escape_string_quote
+      - pattern: PQescapeStringConn
+      - pattern: PQescapeString
+      - pattern: PQescapeLiteral
+      - pattern: PQescapeIdentifier
+      - pattern: sqlite3_mprintf
+      - pattern: sqlite3_snprintf
+      - pattern: sqlite3_bind_text
+      - pattern: sqlite3_bind_int
+      - pattern: strtol
+      - pattern: strtoul
+      - pattern: atoi
+
+  - id: c.code-loading-from-input
+    message: External input names a library or symbol to load
+    severity: WARNING
+    languages: [c, cpp]
+    metadata: { cwe: CWE-114, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: argv
+      - pattern: getenv
+      - pattern: fgets
+      - pattern: read
+      - pattern: recv
+      - pattern: request
+      - pattern: req
+    pattern-sinks:
+      - pattern: dlopen
+      - pattern: dlsym
+      - pattern: LoadLibrary
+      - pattern: LoadLibraryA
+      - pattern: LoadLibraryW
+      - pattern: LoadLibraryEx
+      - pattern: LoadLibraryExA
+      - pattern: LoadLibraryExW
+      - pattern: GetProcAddress
+      - pattern: QLibrary.load
+      - pattern: QLibrary.resolve
+
+  - id: c.memory-size-from-input
+    message: External input sizes an allocation or a copy
+    severity: WARNING
+    languages: [c, cpp]
+    metadata: { cwe: CWE-789, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: argv
+      - pattern: getenv
+      - pattern: fgets
+      - pattern: read
+      - pattern: recv
+      - pattern: recvfrom
+      - pattern: fread
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: malloc
+      - pattern: calloc
+      - pattern: realloc
+      - pattern: alloca
+      - pattern: memcpy
+      - pattern: memset
+      - pattern: memmove
+      - pattern: VirtualAlloc
+      - pattern: HeapAlloc
+      - pattern: new
+      - pattern: reserve
+      - pattern: resize
+
+  - id: c.weak-random-for-secrets
+    message: rand() reaches a key, token or nonce
+    severity: WARNING
+    languages: [c, cpp]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    pattern-sources:
+      - pattern: rand
+      - pattern: rand_r
+      - pattern: random
+      - pattern: drand48
+      - pattern: lrand48
+      - pattern: srand
+      - pattern: std::rand
+      - pattern: std::mt19937
+      - pattern: mt19937
+      - pattern: std::default_random_engine
+      - pattern: default_random_engine
+      - pattern: std::minstd_rand
+    pattern-sinks:
+      - pattern: "*key*"
+      - pattern: "*token*"
+      - pattern: "*secret*"
+      - pattern: "*nonce*"
+      - pattern: "*iv*"
+      - pattern: "*salt*"
+      - pattern: EVP_EncryptInit
+      - pattern: EVP_EncryptInit_ex
+      - pattern: EVP_CipherInit_ex
+      - pattern: AES_set_encrypt_key
+      - pattern: HMAC
+      - pattern: HMAC_Init_ex
+      - pattern: RSA_generate_key_ex
+      - pattern: EVP_PKEY_keygen

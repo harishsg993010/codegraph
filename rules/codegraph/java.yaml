@@ -1,0 +1,502 @@
+# codegraph rules — Java. Apache-2.0.
+#
+# Servlet and Spring handlers receive the request as a parameter
+# (`request`, `req`, `httpRequest`) or as bound arguments; the parameter is
+# the source, the JDK and framework calls the sinks.
+
+rules:
+  - id: java.command-injection
+    message: Request data reaches Runtime.exec or ProcessBuilder
+    severity: ERROR
+    languages: [java]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+      - pattern: args
+      - pattern: System.getenv
+      - pattern: System.getProperty
+    pattern-sinks:
+      - pattern: Runtime.exec
+      - pattern: exec
+      - pattern: ProcessBuilder
+      - pattern: ProcessBuilder.command
+      - pattern: command
+      - pattern: ProcessBuilder.start
+      - pattern: Executor.execute        # commons-exec
+      - pattern: DefaultExecutor.execute
+      - pattern: CommandLine.parse
+    pattern-sanitizers:
+      - pattern: "*escape*"
+      - pattern: "*sanitize*"
+
+  - id: java.sql-injection
+    message: Request data reaches a SQL statement built from it
+    severity: ERROR
+    languages: [java]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Statement.execute
+      - pattern: Statement.executeQuery
+      - pattern: Statement.executeUpdate
+      - pattern: Statement.executeLargeUpdate
+      - pattern: Statement.addBatch
+      - pattern: executeQuery
+      - pattern: executeUpdate
+      - pattern: Connection.prepareStatement
+      - pattern: prepareStatement
+      - pattern: Connection.prepareCall
+      - pattern: prepareCall
+      - pattern: Connection.nativeSQL
+      - pattern: JdbcTemplate.query
+      - pattern: JdbcTemplate.queryForObject
+      - pattern: JdbcTemplate.queryForList
+      - pattern: JdbcTemplate.queryForMap
+      - pattern: JdbcTemplate.update
+      - pattern: JdbcTemplate.execute
+      - pattern: JdbcTemplate.batchUpdate
+      - pattern: EntityManager.createQuery
+      - pattern: EntityManager.createNativeQuery
+      - pattern: createQuery
+      - pattern: createNativeQuery
+      - pattern: createSQLQuery
+      - pattern: Session.createQuery
+      - pattern: Session.createNativeQuery
+      - pattern: Session.createSQLQuery
+      - pattern: SqlSession.selectList
+      - pattern: SqlSession.selectOne
+    pattern-sanitizers:
+      - pattern: ESAPI.encoder
+      - pattern: encodeForSQL
+      - pattern: "*escapeSql*"
+      - pattern: Integer.parseInt
+      - pattern: Long.parseLong
+
+  - id: java.path-traversal
+    message: Request data reaches a file open or path
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+      - pattern: MultipartFile.getOriginalFilename
+      - pattern: getOriginalFilename
+      - pattern: Part.getSubmittedFileName
+    pattern-sinks:
+      - pattern: File
+      - pattern: FileInputStream
+      - pattern: FileOutputStream
+      - pattern: FileReader
+      - pattern: FileWriter
+      - pattern: RandomAccessFile
+      - pattern: Paths.get
+      - pattern: Path.of
+      - pattern: Files.readAllBytes
+      - pattern: Files.readAllLines
+      - pattern: Files.readString
+      - pattern: Files.write
+      - pattern: Files.writeString
+      - pattern: Files.newInputStream
+      - pattern: Files.newOutputStream
+      - pattern: Files.newBufferedReader
+      - pattern: Files.newBufferedWriter
+      - pattern: Files.delete
+      - pattern: Files.deleteIfExists
+      - pattern: Files.copy
+      - pattern: Files.move
+      - pattern: Files.createDirectories
+      - pattern: Files.list
+      - pattern: Files.walk
+      - pattern: FileUtils.readFileToString
+      - pattern: FileUtils.writeStringToFile
+      - pattern: FileUtils.openInputStream
+      - pattern: FileUtils.copyFile
+      - pattern: FileUtils.deleteDirectory
+      - pattern: ServletContext.getResourceAsStream
+      - pattern: ClassLoader.getResource
+      - pattern: ClassLoader.getResourceAsStream
+      - pattern: ZipFile
+      - pattern: ZipInputStream
+      - pattern: MultipartFile.transferTo
+      - pattern: transferTo
+    pattern-sanitizers:
+      - pattern: FilenameUtils.getName
+      - pattern: FilenameUtils.normalize
+      - pattern: getName
+      - pattern: Path.normalize
+      - pattern: normalize
+      - pattern: getCanonicalPath
+      - pattern: getCanonicalFile
+      - pattern: toRealPath
+      - pattern: "*sanitize*"
+
+  - id: java.ssrf
+    message: Request data reaches an outbound HTTP request
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-918, owasp: "A10:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: URL
+      - pattern: URL.openConnection
+      - pattern: openConnection
+      - pattern: URL.openStream
+      - pattern: openStream
+      - pattern: URI.create
+      - pattern: HttpClient.send
+      - pattern: HttpClient.sendAsync
+      - pattern: HttpRequest.newBuilder
+      - pattern: HttpGet
+      - pattern: HttpPost
+      - pattern: HttpPut
+      - pattern: HttpDelete
+      - pattern: HttpUriRequest
+      - pattern: RestTemplate.getForObject
+      - pattern: RestTemplate.getForEntity
+      - pattern: RestTemplate.postForObject
+      - pattern: RestTemplate.postForEntity
+      - pattern: RestTemplate.exchange
+      - pattern: RestTemplate.execute
+      - pattern: WebClient.create
+      - pattern: WebClient.get
+      - pattern: WebClient.post
+      - pattern: Request.Builder.url
+      - pattern: OkHttpClient.newCall
+      - pattern: Jsoup.connect
+      - pattern: Socket
+      - pattern: InetAddress.getByName
+
+  - id: java.open-redirect
+    message: Request data reaches a redirect
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-601, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: HttpServletResponse.sendRedirect
+      - pattern: sendRedirect
+      - pattern: RedirectView
+      - pattern: ModelAndView
+      - pattern: setHeader
+      - pattern: HttpServletResponse.addHeader
+      - pattern: ResponseEntity.status
+
+  - id: java.xss
+    message: Request data reaches a response writer unescaped
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: PrintWriter.print
+      - pattern: PrintWriter.println
+      - pattern: PrintWriter.write
+      - pattern: PrintWriter.printf
+      - pattern: PrintWriter.format
+      - pattern: ServletOutputStream.print
+      - pattern: ServletOutputStream.println
+      - pattern: ServletOutputStream.write
+      - pattern: JspWriter.print
+      - pattern: JspWriter.println
+      - pattern: JspWriter.write
+      - pattern: getWriter
+      - pattern: getOutputStream
+    pattern-sanitizers:
+      - pattern: ESAPI.encoder
+      - pattern: encodeForHTML
+      - pattern: encodeForHTMLAttribute
+      - pattern: encodeForJavaScript
+      - pattern: encodeForURL
+      - pattern: StringEscapeUtils.escapeHtml4
+      - pattern: StringEscapeUtils.escapeHtml
+      - pattern: escapeHtml4
+      - pattern: escapeHtml
+      - pattern: escapeEcmaScript
+      - pattern: HtmlUtils.htmlEscape
+      - pattern: htmlEscape
+      - pattern: Encode.forHtml
+      - pattern: Encode.forHtmlAttribute
+      - pattern: Encode.forJavaScript
+      - pattern: Jsoup.clean
+      - pattern: Sanitizers.sanitize
+      - pattern: PolicyFactory.sanitize
+      - pattern: URLEncoder.encode
+
+  - id: java.deserialization
+    message: Request data reaches an object deserialiser
+    severity: ERROR
+    languages: [java]
+    metadata: { cwe: CWE-502, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+      - pattern: getInputStream
+    pattern-sinks:
+      - pattern: ObjectInputStream
+      - pattern: ObjectInputStream.readObject
+      - pattern: readObject
+      - pattern: readUnshared
+      - pattern: XMLDecoder
+      - pattern: XMLDecoder.readObject
+      - pattern: XStream.fromXML
+      - pattern: fromXML
+      - pattern: Yaml.load
+      - pattern: Yaml.loadAs
+      - pattern: Yaml.loadAll
+      - pattern: ObjectMapper.enableDefaultTyping
+      - pattern: enableDefaultTyping
+      - pattern: SerializationUtils.deserialize
+      - pattern: Kryo.readObject
+      - pattern: Kryo.readClassAndObject
+      - pattern: Hessian2Input.readObject
+      - pattern: JSON.parseObject
+      - pattern: JSON.parse
+    pattern-sanitizers:
+      - pattern: ValidatingObjectInputStream
+      - pattern: ObjectInputFilter
+
+  - id: java.xxe
+    message: Request data reaches an XML parser that may resolve external entities
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-611, owasp: "A05:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+      - pattern: getInputStream
+    pattern-sinks:
+      - pattern: DocumentBuilder.parse
+      - pattern: DocumentBuilderFactory.newInstance
+      - pattern: SAXParser.parse
+      - pattern: SAXParserFactory.newInstance
+      - pattern: SAXReader.read
+      - pattern: XMLReader.parse
+      - pattern: XMLInputFactory.createXMLStreamReader
+      - pattern: XMLInputFactory.createXMLEventReader
+      - pattern: TransformerFactory.newInstance
+      - pattern: Transformer.transform
+      - pattern: SchemaFactory.newSchema
+      - pattern: Validator.validate
+      - pattern: Unmarshaller.unmarshal
+      - pattern: unmarshal
+      - pattern: XPathExpression.evaluate
+      - pattern: SAXBuilder.build
+      - pattern: XMLReaderFactory.createXMLReader
+
+  - id: java.xpath-injection
+    message: Request data reaches an XPath expression
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-643, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: XPath.compile
+      - pattern: XPath.evaluate
+      - pattern: compile
+      - pattern: evaluate
+      - pattern: XPathExpression.evaluate
+      - pattern: XPathFactory.newXPath
+
+  - id: java.ldap-injection
+    message: Request data reaches an LDAP search
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-90, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: DirContext.search
+      - pattern: InitialDirContext.search
+      - pattern: LdapContext.search
+      - pattern: search
+      - pattern: LdapTemplate.search
+      - pattern: LdapTemplate.lookup
+      - pattern: SearchRequest
+      - pattern: LDAPConnection.search
+    pattern-sanitizers:
+      - pattern: encodeForLDAP
+      - pattern: encodeForDN
+      - pattern: LdapEncoder.filterEncode
+      - pattern: LdapEncoder.nameEncode
+      - pattern: Filter.encodeValue
+      - pattern: "*escape*"
+
+  - id: java.expression-language-injection
+    message: Request data reaches an expression-language or script engine
+    severity: ERROR
+    languages: [java]
+    metadata: { cwe: CWE-917, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: SpelExpressionParser.parseExpression
+      - pattern: parseExpression
+      - pattern: ExpressionParser.parseExpression
+      - pattern: Expression.getValue
+      - pattern: ExpressionFactory.createValueExpression
+      - pattern: createValueExpression
+      - pattern: createMethodExpression
+      - pattern: ScriptEngine.eval
+      - pattern: eval
+      - pattern: Ognl.getValue
+      - pattern: Ognl.parseExpression
+      - pattern: MVEL.eval
+      - pattern: JexlEngine.createExpression
+      - pattern: JexlEngine.createScript
+      - pattern: GroovyShell.evaluate
+      - pattern: GroovyShell.parse
+      - pattern: Velocity.evaluate
+      - pattern: StringTemplate
+
+  - id: java.template-injection
+    message: Request data reaches a template compiled from a string
+    severity: ERROR
+    languages: [java]
+    metadata: { cwe: CWE-1336, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Template
+      - pattern: freemarker.template.Template
+      - pattern: Configuration.getTemplate
+      - pattern: StringTemplateLoader.putTemplate
+      - pattern: Velocity.evaluate
+      - pattern: VelocityEngine.evaluate
+      - pattern: Mustache.compile
+      - pattern: MustacheFactory.compile
+      - pattern: Handlebars.compileInline
+      - pattern: compileInline
+      - pattern: TemplateEngine.process
+      - pattern: StringTemplateResolver
+
+  - id: java.reflection-injection
+    message: Request data selects a class or method by name
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-470, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Class.forName
+      - pattern: forName
+      - pattern: ClassLoader.loadClass
+      - pattern: loadClass
+      - pattern: Class.getMethod
+      - pattern: getMethod
+      - pattern: Class.getDeclaredMethod
+      - pattern: Method.invoke
+      - pattern: invoke
+      - pattern: Constructor.newInstance
+      - pattern: newInstance
+      - pattern: URLClassLoader
+
+  - id: java.header-injection
+    message: Request data reaches a response header or cookie
+    severity: INFO
+    languages: [java]
+    metadata: { cwe: CWE-113 }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: HttpServletResponse.setHeader
+      - pattern: HttpServletResponse.addHeader
+      - pattern: HttpServletResponse.addCookie
+      - pattern: addCookie
+      - pattern: Cookie
+      - pattern: HttpHeaders.set
+      - pattern: HttpHeaders.add
+
+  - id: java.log-injection
+    message: Request data reaches a log line unescaped
+    severity: INFO
+    languages: [java]
+    metadata: { cwe: CWE-117 }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Logger.info
+      - pattern: Logger.warn
+      - pattern: Logger.error
+      - pattern: Logger.debug
+      - pattern: Logger.trace
+      - pattern: Logger.fatal
+      - pattern: log.info
+      - pattern: log.warn
+      - pattern: log.error
+      - pattern: log.debug
+      - pattern: logger.info
+      - pattern: logger.warn
+      - pattern: logger.error
+      - pattern: logger.debug
+
+  - id: java.weak-random-for-secrets
+    message: java.util.Random reaches a key, token or secret
+    severity: WARNING
+    languages: [java]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    pattern-sources:
+      - pattern: Random
+      - pattern: Random.nextInt
+      - pattern: Random.nextLong
+      - pattern: Random.nextBytes
+      - pattern: Random.nextDouble
+      - pattern: Math.random
+      - pattern: ThreadLocalRandom.current
+    pattern-sinks:
+      - pattern: "*Token*"
+      - pattern: "*Secret*"
+      - pattern: "*Password*"
+      - pattern: "*Nonce*"
+      - pattern: SecretKeySpec
+      - pattern: IvParameterSpec
+      - pattern: KeyGenerator.init
+      - pattern: Cipher.init
+      - pattern: Mac.init

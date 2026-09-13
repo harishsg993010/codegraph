@@ -1,0 +1,446 @@
+# codegraph rules — Rust. Apache-2.0.
+#
+# Web handlers receive extractors (`req`, `request`, `path`, `query`,
+# `body`, `form`, `params`); those parameters and the process-level
+# inputs are the sources. `a::b::c` patterns split like `a.b.c`.
+
+rules:
+  - id: rust.command-injection
+    message: External input reaches a process spawn
+    severity: ERROR
+    languages: [rust]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: body
+      - pattern: form
+      - pattern: path
+      - pattern: std::env::args
+      - pattern: env::args
+      - pattern: std::env::var
+      - pattern: env::var
+      - pattern: stdin
+      - pattern: read_line
+    pattern-sinks:
+      - pattern: Command::new
+      - pattern: Command::arg
+      - pattern: Command::args
+      - pattern: process::Command
+      - pattern: tokio::process::Command
+      - pattern: async_process::Command
+      - pattern: std::process::Command
+    pattern-sanitizers:
+      - pattern: shell_escape::escape
+      - pattern: shlex::quote
+      - pattern: shlex::try_quote
+      - pattern: shell_words::quote
+
+  - id: rust.sql-injection
+    message: External input reaches a SQL query built from it
+    severity: ERROR
+    languages: [rust]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: body
+      - pattern: form
+      - pattern: path
+    pattern-sinks:
+      - pattern: sqlx::query
+      - pattern: sqlx::query_as
+      - pattern: sqlx::query_scalar
+      - pattern: sqlx::raw_sql
+      - pattern: raw_sql
+      - pattern: diesel::sql_query
+      - pattern: sql_query
+      - pattern: diesel::dsl::sql
+      - pattern: sql
+      - pattern: Connection::execute
+      - pattern: Connection::execute_batch
+      - pattern: Connection::prepare
+      - pattern: Connection::query
+      - pattern: Connection::query_row
+      - pattern: Client::query
+      - pattern: Client::execute
+      - pattern: Client::batch_execute
+      - pattern: Client::prepare
+      - pattern: Transaction::execute
+      - pattern: Transaction::query
+      - pattern: Conn::query_drop
+      - pattern: Conn::exec_drop
+      - pattern: Conn::query_iter
+      - pattern: Statement::from_string
+      - pattern: Statement::from_sql_and_values
+    pattern-sanitizers:
+      - pattern: str::parse
+      - pattern: parse
+      - pattern: escape_literal
+      - pattern: escape_identifier
+
+  - id: rust.path-traversal
+    message: External input reaches a file operation
+    severity: WARNING
+    languages: [rust]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: body
+      - pattern: form
+      - pattern: path
+      - pattern: filename
+      - pattern: file_name
+    pattern-sinks:
+      - pattern: File::open
+      - pattern: File::create
+      - pattern: File::create_new
+      - pattern: OpenOptions::open
+      - pattern: fs::read
+      - pattern: fs::read_to_string
+      - pattern: fs::write
+      - pattern: fs::remove_file
+      - pattern: fs::remove_dir
+      - pattern: fs::remove_dir_all
+      - pattern: fs::rename
+      - pattern: fs::copy
+      - pattern: fs::create_dir
+      - pattern: fs::create_dir_all
+      - pattern: fs::read_dir
+      - pattern: fs::metadata
+      - pattern: fs::symlink_metadata
+      - pattern: fs::hard_link
+      - pattern: fs::set_permissions
+      - pattern: std::fs::read
+      - pattern: std::fs::write
+      - pattern: tokio::fs::read
+      - pattern: tokio::fs::write
+      - pattern: tokio::fs::File::open
+      - pattern: tokio::fs::remove_file
+      - pattern: NamedFile::open
+      - pattern: ServeFile::new
+      - pattern: ServeDir::new
+      - pattern: Path::new
+      - pattern: PathBuf::from
+      - pattern: PathBuf::push
+      - pattern: Path::join
+      - pattern: ZipArchive::extract
+      - pattern: Archive::unpack
+    pattern-sanitizers:
+      - pattern: Path::file_name
+      - pattern: file_name
+      - pattern: fs::canonicalize
+      - pattern: canonicalize
+      - pattern: Path::canonicalize
+      - pattern: path_clean::clean
+      - pattern: clean
+      - pattern: Path::strip_prefix
+      - pattern: sanitize_filename::sanitize
+      - pattern: "*sanitize*"
+
+  - id: rust.ssrf
+    message: External input reaches an outbound HTTP request
+    severity: WARNING
+    languages: [rust]
+    metadata: { cwe: CWE-918, owasp: "A10:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: body
+      - pattern: form
+      - pattern: path
+    pattern-sinks:
+      - pattern: reqwest::get
+      - pattern: reqwest::blocking::get
+      - pattern: Client::get
+      - pattern: Client::post
+      - pattern: Client::put
+      - pattern: Client::delete
+      - pattern: Client::request
+      - pattern: Client::head
+      - pattern: ureq::get
+      - pattern: ureq::post
+      - pattern: ureq::request
+      - pattern: Agent::get
+      - pattern: Agent::post
+      - pattern: hyper::Uri
+      - pattern: Uri::from_str
+      - pattern: Url::parse
+      - pattern: TcpStream::connect
+      - pattern: tokio::net::TcpStream::connect
+      - pattern: lookup_host
+      - pattern: ToSocketAddrs::to_socket_addrs
+      - pattern: isahc::get
+      - pattern: surf::get
+      - pattern: awc::Client::get
+
+  - id: rust.open-redirect
+    message: External input reaches a redirect
+    severity: WARNING
+    languages: [rust]
+    metadata: { cwe: CWE-601, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: form
+    pattern-sinks:
+      - pattern: Redirect::to
+      - pattern: Redirect::temporary
+      - pattern: Redirect::permanent
+      - pattern: Redirect::found
+      - pattern: Redirect::see_other
+      - pattern: redirect
+      - pattern: HttpResponse::Found
+      - pattern: HttpResponse::TemporaryRedirect
+      - pattern: HttpResponse::PermanentRedirect
+      - pattern: header::LOCATION
+      - pattern: LOCATION
+
+  - id: rust.xss
+    message: External input reaches an HTML response unescaped
+    severity: WARNING
+    languages: [rust]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: body
+      - pattern: form
+      - pattern: path
+    pattern-sinks:
+      - pattern: Html
+      - pattern: axum::response::Html
+      - pattern: HttpResponse::body
+      - pattern: HttpResponseBuilder::body
+      - pattern: RawHtml
+      - pattern: PreEscaped
+      - pattern: maud::PreEscaped
+      - pattern: format
+      - pattern: write
+      - pattern: writeln
+    pattern-sanitizers:
+      - pattern: html_escape::encode_text
+      - pattern: html_escape::encode_safe
+      - pattern: encode_text
+      - pattern: encode_safe
+      - pattern: askama::filters::escape
+      - pattern: escape
+      - pattern: ammonia::clean
+      - pattern: clean
+      - pattern: htmlescape::encode_minimal
+      - pattern: v_htmlescape::escape
+
+  - id: rust.template-injection
+    message: External input reaches a template compiled from a string
+    severity: ERROR
+    languages: [rust]
+    metadata: { cwe: CWE-1336, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: body
+      - pattern: form
+    pattern-sinks:
+      - pattern: Tera::one_off
+      - pattern: Tera::add_raw_template
+      - pattern: add_raw_template
+      - pattern: Tera::render_str
+      - pattern: render_str
+      - pattern: Handlebars::render_template
+      - pattern: render_template
+      - pattern: Handlebars::register_template_string
+      - pattern: register_template_string
+      - pattern: Environment::add_template
+      - pattern: Environment::render_str
+      - pattern: Environment::template_from_str
+      - pattern: template_from_str
+      - pattern: liquid::ParserBuilder::parse
+      - pattern: Parser::parse
+
+  - id: rust.deserialization
+    message: External input reaches a deserialiser that may execute or exhaust
+    severity: WARNING
+    languages: [rust]
+    metadata: { cwe: CWE-502, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: body
+      - pattern: stdin
+    pattern-sinks:
+      - pattern: serde_yaml::from_str
+      - pattern: serde_yaml::from_slice
+      - pattern: serde_yaml::from_reader
+      - pattern: serde_pickle::from_slice
+      - pattern: serde_pickle::from_reader
+      - pattern: bincode::deserialize
+      - pattern: bincode::deserialize_from
+      - pattern: rmp_serde::from_slice
+      - pattern: rmp_serde::from_read
+      - pattern: ron::from_str
+      - pattern: toml::from_str
+      - pattern: Archive::new
+      - pattern: ZipArchive::new
+      - pattern: GzDecoder::new
+      - pattern: XzDecoder::new
+      - pattern: BzDecoder::new
+      - pattern: ZlibDecoder::new
+
+  - id: rust.xxe
+    message: External input reaches an XML parser with entity expansion
+    severity: INFO
+    languages: [rust]
+    metadata: { cwe: CWE-611, owasp: "A05:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: body
+    pattern-sinks:
+      - pattern: roxmltree::Document::parse
+      - pattern: Document::parse
+      - pattern: quick_xml::Reader::from_str
+      - pattern: Reader::from_str
+      - pattern: Reader::from_reader
+      - pattern: xml::EventReader::new
+      - pattern: EventReader::new
+      - pattern: libxml::parser::Parser::parse_string
+      - pattern: parse_string
+      - pattern: sxd_document::parser::parse
+
+  - id: rust.regex-injection
+    message: External input reaches a Regex built from a string
+    severity: INFO
+    languages: [rust]
+    metadata: { cwe: CWE-1333 }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: form
+    pattern-sinks:
+      - pattern: Regex::new
+      - pattern: RegexBuilder::new
+      - pattern: RegexSet::new
+      - pattern: regex::bytes::Regex::new
+      - pattern: fancy_regex::Regex::new
+    pattern-sanitizers:
+      - pattern: regex::escape
+      - pattern: escape
+
+  - id: rust.header-injection
+    message: External input reaches a response header
+    severity: INFO
+    languages: [rust]
+    metadata: { cwe: CWE-113 }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: form
+    pattern-sinks:
+      - pattern: HeaderValue::from_str
+      - pattern: HeaderValue::from_bytes
+      - pattern: HeaderValue::from_shared
+      - pattern: HeaderMap::insert
+      - pattern: HeaderMap::append
+      - pattern: headers_mut
+      - pattern: insert_header
+      - pattern: append_header
+      - pattern: set_header
+      - pattern: Cookie::new
+      - pattern: Cookie::build
+      - pattern: CookieJar::add
+
+  - id: rust.log-injection
+    message: External input reaches a log line unescaped
+    severity: INFO
+    languages: [rust]
+    metadata: { cwe: CWE-117 }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: query
+      - pattern: params
+      - pattern: form
+      - pattern: body
+    pattern-sinks:
+      - pattern: log::info
+      - pattern: log::warn
+      - pattern: log::error
+      - pattern: log::debug
+      - pattern: log::trace
+      - pattern: tracing::info
+      - pattern: tracing::warn
+      - pattern: tracing::error
+      - pattern: tracing::debug
+      - pattern: tracing::trace
+      - pattern: tracing::event
+      - pattern: println
+      - pattern: eprintln
+      - pattern: slog::info
+      - pattern: slog::warn
+      - pattern: slog::error
+
+  - id: rust.weak-random-for-secrets
+    message: A non-cryptographic RNG reaches a key, token or nonce
+    severity: WARNING
+    languages: [rust]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    pattern-sources:
+      - pattern: rand::thread_rng
+      - pattern: thread_rng
+      - pattern: rand::random
+      - pattern: random
+      - pattern: SmallRng::from_entropy
+      - pattern: SmallRng::seed_from_u64
+      - pattern: StdRng::seed_from_u64
+      - pattern: fastrand::u64
+      - pattern: fastrand::u32
+      - pattern: fastrand::bytes
+      - pattern: oorandom::Rand64
+      - pattern: XorShiftRng
+      - pattern: Pcg64
+    pattern-sinks:
+      - pattern: "*token*"
+      - pattern: "*secret*"
+      - pattern: "*password*"
+      - pattern: "*nonce*"
+      - pattern: "*_key*"
+      - pattern: Key::from_slice
+      - pattern: Nonce::from_slice
+      - pattern: Aes256Gcm::new
+      - pattern: ChaCha20Poly1305::new
+      - pattern: Hmac::new_from_slice
+      - pattern: SigningKey::from_bytes
+      - pattern: SecretKey::from_slice
+      - pattern: jsonwebtoken::encode
+      - pattern: EncodingKey::from_secret

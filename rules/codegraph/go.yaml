@@ -1,0 +1,364 @@
+# codegraph rules — Go. Apache-2.0.
+#
+# The request reaches a handler as a parameter — `r`, `req`, `request`,
+# `c` (gin), `ctx` (echo, fiber) — and library calls on it are transparent
+# by summary (`r.FormValue(k)` yields `r`'s data), so the parameter is the
+# source. Test files are left out of every rule.
+
+rules:
+  - id: go.command-injection
+    message: A request value reaches a process spawn
+    severity: ERROR
+    languages: [go]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c                    # gin.Context
+      - pattern: os.Args
+      - pattern: os.Getenv
+      - pattern: flag.Arg
+      - pattern: flag.Args
+    pattern-sinks:
+      - pattern: exec.Command
+      - pattern: exec.CommandContext
+      - pattern: syscall.Exec
+      - pattern: syscall.ForkExec
+      - pattern: os.StartProcess
+    pattern-sanitizers:
+      - pattern: shellescape.Quote
+      - pattern: shellquote.Join
+      - pattern: strconv.Quote
+
+  - id: go.sql-injection
+    message: A request value reaches a SQL query built from it
+    severity: ERROR
+    languages: [go]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: db.Query
+      - pattern: db.QueryRow
+      - pattern: db.Exec
+      - pattern: db.Prepare
+      - pattern: DB.Query
+      - pattern: DB.QueryRow
+      - pattern: DB.QueryContext
+      - pattern: DB.QueryRowContext
+      - pattern: DB.Exec
+      - pattern: DB.ExecContext
+      - pattern: DB.Prepare
+      - pattern: Tx.Query
+      - pattern: Tx.Exec
+      - pattern: Conn.Query
+      - pattern: Conn.Exec
+      - pattern: gorm.Raw
+      - pattern: DB.Raw
+      - pattern: DB.Where
+      - pattern: DB.Order
+      - pattern: DB.Group
+      - pattern: DB.Having
+      - pattern: DB.Select
+      - pattern: DB.Pluck
+      - pattern: sqlx.Query
+      - pattern: sqlx.Select
+      - pattern: sqlx.Get
+      - pattern: Engine.SQL
+      - pattern: Session.SQL
+      - pattern: Session.Where
+      - pattern: Session.OrderBy
+      - pattern: Session.Exec
+    pattern-sanitizers:
+      - pattern: strconv.Atoi
+      - pattern: strconv.ParseInt
+      - pattern: strconv.ParseFloat
+      - pattern: strconv.ParseBool
+      - pattern: pq.QuoteIdentifier
+      - pattern: pq.QuoteLiteral
+
+  - id: go.path-traversal
+    message: A request value reaches a file operation
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: os.Open
+      - pattern: os.OpenFile
+      - pattern: os.Create
+      - pattern: os.ReadFile
+      - pattern: os.WriteFile
+      - pattern: os.Remove
+      - pattern: os.RemoveAll
+      - pattern: os.Rename
+      - pattern: os.Mkdir
+      - pattern: os.MkdirAll
+      - pattern: os.ReadDir
+      - pattern: os.Stat
+      - pattern: os.Lstat
+      - pattern: os.Chmod
+      - pattern: os.Chown
+      - pattern: os.Symlink
+      - pattern: os.Link
+      - pattern: ioutil.ReadFile
+      - pattern: ioutil.WriteFile
+      - pattern: ioutil.ReadDir
+      - pattern: http.ServeFile
+      - pattern: http.Dir
+      - pattern: filepath.Walk
+      - pattern: filepath.WalkDir
+      - pattern: template.ParseFiles
+      - pattern: template.ParseGlob
+    pattern-sanitizers:
+      - pattern: filepath.Base
+      - pattern: filepath.Clean
+      - pattern: filepath.Rel
+      - pattern: filepath.Abs
+      - pattern: path.Base
+      - pattern: securejoin.SecureJoin
+      - pattern: "*SanitizePath*"
+      - pattern: "*CleanPath*"
+
+  - id: go.ssrf
+    message: A request value reaches an outbound HTTP request
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-918, owasp: "A10:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: http.Get
+      - pattern: http.Post
+      - pattern: http.Head
+      - pattern: http.PostForm
+      - pattern: http.NewRequest
+      - pattern: http.NewRequestWithContext
+      - pattern: Client.Get
+      - pattern: Client.Post
+      - pattern: Client.Do
+      - pattern: Client.Head
+      - pattern: url.Parse
+      - pattern: net.Dial
+      - pattern: net.DialTimeout
+      - pattern: Dialer.Dial
+      - pattern: Dialer.DialContext
+      - pattern: resty.R
+
+  - id: go.open-redirect
+    message: A request value reaches a redirect
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-601, owasp: "A01:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: http.Redirect
+      - pattern: Context.Redirect
+      - pattern: c.Redirect
+      - pattern: ctx.Redirect
+      - pattern: Redirect
+
+  - id: go.xss
+    message: A request value reaches a response body or an unescaped template value
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: w.Write
+      - pattern: ResponseWriter.Write
+      - pattern: fmt.Fprintf
+      - pattern: fmt.Fprint
+      - pattern: fmt.Fprintln
+      - pattern: io.WriteString
+      - pattern: template.HTML
+      - pattern: template.JS
+      - pattern: template.URL
+      - pattern: template.CSS
+      - pattern: template.HTMLAttr
+      - pattern: text/template.New
+      - pattern: c.String
+      - pattern: c.Data
+    pattern-sanitizers:
+      - pattern: html.EscapeString
+      - pattern: template.HTMLEscapeString
+      - pattern: template.JSEscapeString
+      - pattern: url.QueryEscape
+      - pattern: url.PathEscape
+      - pattern: bluemonday.Sanitize
+      - pattern: Policy.Sanitize
+
+  - id: go.template-injection
+    message: A request value reaches a template parsed from a string
+    severity: ERROR
+    languages: [go]
+    metadata: { cwe: CWE-1336, owasp: "A03:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: Template.Parse
+      - pattern: template.Must
+      - pattern: text/template.Parse
+
+  - id: go.ldap-injection
+    message: A request value reaches an LDAP search filter
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-90, owasp: "A03:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: ldap.NewSearchRequest
+      - pattern: Conn.Search
+      - pattern: Conn.SearchWithPaging
+    pattern-sanitizers:
+      - pattern: ldap.EscapeFilter
+      - pattern: ldap.EscapeDN
+
+  - id: go.xpath-injection
+    message: A request value reaches an XPath query
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-643, owasp: "A03:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: xpath.Compile
+      - pattern: xpath.MustCompile
+      - pattern: xmlquery.Find
+      - pattern: xmlquery.FindOne
+      - pattern: htmlquery.Find
+      - pattern: htmlquery.FindOne
+
+  - id: go.header-injection
+    message: A request value reaches a response header or cookie
+    severity: INFO
+    languages: [go]
+    metadata: { cwe: CWE-113 }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: Header.Set
+      - pattern: Header.Add
+      - pattern: http.SetCookie
+      - pattern: c.Header
+      - pattern: c.SetCookie
+
+  - id: go.log-injection
+    message: A request value reaches a log line unescaped
+    severity: INFO
+    languages: [go]
+    metadata: { cwe: CWE-117 }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: log.Printf
+      - pattern: log.Print
+      - pattern: log.Println
+      - pattern: log.Fatalf
+      - pattern: log.Panicf
+      - pattern: log.Info
+      - pattern: log.Warn
+      - pattern: log.Error
+      - pattern: log.Debug
+      - pattern: logger.Info
+      - pattern: logger.Warn
+      - pattern: logger.Error
+      - pattern: logger.Debug
+      - pattern: zap.String
+
+  - id: go.weak-random-for-secrets
+    message: math/rand reaches a token, key or secret
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: rand.Int
+      - pattern: rand.Intn
+      - pattern: rand.Int31
+      - pattern: rand.Int63
+      - pattern: rand.Read
+      - pattern: rand.Float64
+      - pattern: rand.Perm
+    pattern-sinks:
+      - pattern: "*Token*"
+      - pattern: "*Secret*"
+      - pattern: "*Password*"
+      - pattern: "*Nonce*"
+      - pattern: aes.NewCipher
+      - pattern: hmac.New
+      - pattern: jwt.NewWithClaims
+
+  - id: go.unsafe-deserialisation
+    message: A request value reaches gob or an unsafe YAML decode
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-502, owasp: "A08:2021" }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: request
+      - pattern: "*Request"
+      - pattern: c
+    pattern-sinks:
+      - pattern: gob.NewDecoder
+      - pattern: Decoder.Decode
+      - pattern: yaml.Unmarshal

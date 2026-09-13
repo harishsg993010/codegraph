@@ -1,0 +1,413 @@
+# codegraph rules — C#. Apache-2.0.
+#
+# ASP.NET handlers receive bound arguments and `Request`; the parameter
+# names below are the conventions, the BCL and framework calls the sinks.
+
+rules:
+  - id: csharp.command-injection
+    message: Request data reaches Process.Start
+    severity: ERROR
+    languages: [csharp]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+      - pattern: args
+      - pattern: Environment.GetEnvironmentVariable
+      - pattern: Environment.GetCommandLineArgs
+      - pattern: Console.ReadLine
+    pattern-sinks:
+      - pattern: Process.Start
+      - pattern: ProcessStartInfo
+      - pattern: ProcessStartInfo.FileName
+      - pattern: ProcessStartInfo.Arguments
+      - pattern: Process.Start
+    pattern-sanitizers:
+      - pattern: "*Escape*"
+      - pattern: "*Sanitize*"
+
+  - id: csharp.sql-injection
+    message: Request data reaches a SQL command built from it
+    severity: ERROR
+    languages: [csharp]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: SqlCommand
+      - pattern: SqlCommand.CommandText
+      - pattern: CommandText
+      - pattern: OleDbCommand
+      - pattern: OdbcCommand
+      - pattern: OracleCommand
+      - pattern: MySqlCommand
+      - pattern: NpgsqlCommand
+      - pattern: SqliteCommand
+      - pattern: ExecuteReader
+      - pattern: ExecuteNonQuery
+      - pattern: ExecuteScalar
+      - pattern: ExecuteReaderAsync
+      - pattern: ExecuteNonQueryAsync
+      - pattern: ExecuteScalarAsync
+      - pattern: SqlDataAdapter
+      - pattern: FromSqlRaw
+      - pattern: ExecuteSqlRaw
+      - pattern: ExecuteSqlRawAsync
+      - pattern: SqlQuery
+      - pattern: ExecuteSqlCommand
+      - pattern: Database.SqlQuery
+      - pattern: Database.ExecuteSqlCommand
+      - pattern: Query                # Dapper
+      - pattern: QueryAsync
+      - pattern: Execute
+      - pattern: ExecuteAsync
+      - pattern: QueryFirst
+      - pattern: QuerySingle
+      - pattern: CreateSQLQuery
+      - pattern: CreateQuery
+    pattern-sanitizers:
+      - pattern: FromSqlInterpolated
+      - pattern: ExecuteSqlInterpolated
+      - pattern: SqlParameter
+      - pattern: Parameters.Add
+      - pattern: Parameters.AddWithValue
+      - pattern: int.Parse
+      - pattern: int.TryParse
+      - pattern: Convert.ToInt32
+
+  - id: csharp.path-traversal
+    message: Request data reaches a file operation
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+      - pattern: IFormFile.FileName
+      - pattern: FileName
+    pattern-sinks:
+      - pattern: File.Open
+      - pattern: File.OpenRead
+      - pattern: File.OpenWrite
+      - pattern: File.OpenText
+      - pattern: File.Create
+      - pattern: File.ReadAllText
+      - pattern: File.ReadAllBytes
+      - pattern: File.ReadAllLines
+      - pattern: File.ReadLines
+      - pattern: File.WriteAllText
+      - pattern: File.WriteAllBytes
+      - pattern: File.WriteAllLines
+      - pattern: File.AppendAllText
+      - pattern: File.Delete
+      - pattern: File.Copy
+      - pattern: File.Move
+      - pattern: File.Exists
+      - pattern: FileStream
+      - pattern: StreamReader
+      - pattern: StreamWriter
+      - pattern: FileInfo
+      - pattern: Directory.GetFiles
+      - pattern: Directory.EnumerateFiles
+      - pattern: Directory.CreateDirectory
+      - pattern: Directory.Delete
+      - pattern: Directory.Exists
+      - pattern: DirectoryInfo
+      - pattern: Path.Combine
+      - pattern: PhysicalFile
+      - pattern: File                 # Controller.File
+      - pattern: FileStreamResult
+      - pattern: PhysicalFileResult
+      - pattern: ZipFile.ExtractToDirectory
+      - pattern: ZipArchiveEntry.ExtractToFile
+      - pattern: ExtractToFile
+      - pattern: CopyTo
+      - pattern: CopyToAsync
+    pattern-sanitizers:
+      - pattern: Path.GetFileName
+      - pattern: Path.GetFullPath
+      - pattern: Path.GetFileNameWithoutExtension
+      - pattern: "*Sanitize*"
+
+  - id: csharp.ssrf
+    message: Request data reaches an outbound HTTP request
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-918, owasp: "A10:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: HttpClient.GetAsync
+      - pattern: HttpClient.GetStringAsync
+      - pattern: HttpClient.GetStreamAsync
+      - pattern: HttpClient.GetByteArrayAsync
+      - pattern: HttpClient.PostAsync
+      - pattern: HttpClient.PutAsync
+      - pattern: HttpClient.DeleteAsync
+      - pattern: HttpClient.SendAsync
+      - pattern: GetAsync
+      - pattern: GetStringAsync
+      - pattern: PostAsync
+      - pattern: SendAsync
+      - pattern: HttpRequestMessage
+      - pattern: WebRequest.Create
+      - pattern: HttpWebRequest
+      - pattern: WebClient.DownloadString
+      - pattern: WebClient.DownloadFile
+      - pattern: WebClient.DownloadData
+      - pattern: WebClient.OpenRead
+      - pattern: WebClient.UploadString
+      - pattern: DownloadString
+      - pattern: DownloadFile
+      - pattern: RestClient
+      - pattern: RestRequest
+      - pattern: Uri
+      - pattern: TcpClient
+      - pattern: Dns.GetHostAddresses
+
+  - id: csharp.open-redirect
+    message: Request data reaches a redirect
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-601, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+      - pattern: returnUrl
+      - pattern: ReturnUrl
+    pattern-sinks:
+      - pattern: Redirect
+      - pattern: RedirectPermanent
+      - pattern: Response.Redirect
+      - pattern: RedirectResult
+      - pattern: LocalRedirect
+    pattern-sanitizers:
+      - pattern: Url.IsLocalUrl
+      - pattern: IsLocalUrl
+
+  - id: csharp.xss
+    message: Request data reaches HTML output unencoded
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Response.Write
+      - pattern: Response.WriteAsync
+      - pattern: HtmlString
+      - pattern: MvcHtmlString
+      - pattern: Html.Raw
+      - pattern: Raw
+      - pattern: HtmlHelper.Raw
+      - pattern: Content
+      - pattern: InnerHtml
+      - pattern: Literal.Text
+      - pattern: Label.Text
+    pattern-sanitizers:
+      - pattern: HttpUtility.HtmlEncode
+      - pattern: HtmlEncoder.Encode
+      - pattern: WebUtility.HtmlEncode
+      - pattern: HtmlEncode
+      - pattern: JavaScriptEncoder.Encode
+      - pattern: UrlEncoder.Encode
+      - pattern: AntiXss.HtmlEncode
+      - pattern: Sanitizer.GetSafeHtmlFragment
+      - pattern: HtmlSanitizer.Sanitize
+
+  - id: csharp.deserialization
+    message: Request data reaches an unsafe deserialiser
+    severity: ERROR
+    languages: [csharp]
+    metadata: { cwe: CWE-502, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: BinaryFormatter
+      - pattern: BinaryFormatter.Deserialize
+      - pattern: Deserialize
+      - pattern: SoapFormatter
+      - pattern: NetDataContractSerializer
+      - pattern: LosFormatter
+      - pattern: ObjectStateFormatter
+      - pattern: JavaScriptSerializer
+      - pattern: JsonConvert.DeserializeObject
+      - pattern: DeserializeObject
+      - pattern: TypeNameHandling
+      - pattern: XmlSerializer
+      - pattern: DataContractSerializer
+      - pattern: ResolveType
+      - pattern: Type.GetType
+    pattern-sanitizers:
+      - pattern: JsonSerializer.Deserialize
+      - pattern: JsonSerializer.DeserializeAsync
+
+  - id: csharp.xxe
+    message: Request data reaches an XML reader that may resolve external entities
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-611, owasp: "A05:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: XmlDocument.Load
+      - pattern: XmlDocument.LoadXml
+      - pattern: LoadXml
+      - pattern: XmlTextReader
+      - pattern: XmlReader.Create
+      - pattern: XDocument.Load
+      - pattern: XDocument.Parse
+      - pattern: XElement.Load
+      - pattern: XElement.Parse
+      - pattern: XPathDocument
+      - pattern: XslCompiledTransform.Load
+      - pattern: XmlSchema.Read
+      - pattern: XmlUrlResolver
+      - pattern: XmlResolver
+
+  - id: csharp.ldap-injection
+    message: Request data reaches an LDAP filter
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-90, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: DirectorySearcher
+      - pattern: DirectorySearcher.Filter
+      - pattern: Filter
+      - pattern: DirectoryEntry
+      - pattern: SearchRequest
+      - pattern: LdapConnection.SendRequest
+      - pattern: PrincipalSearcher
+    pattern-sanitizers:
+      - pattern: "*Escape*"
+      - pattern: "*Encode*"
+
+  - id: csharp.xpath-injection
+    message: Request data reaches an XPath expression
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-643, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: SelectNodes
+      - pattern: SelectSingleNode
+      - pattern: XPathExpression.Compile
+      - pattern: XPathNavigator.Select
+      - pattern: XPathNavigator.Evaluate
+      - pattern: XPathNavigator.Compile
+      - pattern: XPathSelectElements
+      - pattern: XPathSelectElement
+      - pattern: XPathEvaluate
+
+  - id: csharp.header-injection
+    message: Request data reaches a response header or cookie
+    severity: INFO
+    languages: [csharp]
+    metadata: { cwe: CWE-113 }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Response.AddHeader
+      - pattern: Response.AppendHeader
+      - pattern: Headers.Add
+      - pattern: Headers.Append
+      - pattern: Response.Cookies.Append
+      - pattern: Cookies.Append
+      - pattern: HttpCookie
+      - pattern: SetCookie
+
+  - id: csharp.log-injection
+    message: Request data reaches a log line unescaped
+    severity: INFO
+    languages: [csharp]
+    metadata: { cwe: CWE-117 }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: Request
+      - pattern: "*Request"
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: LogInformation
+      - pattern: LogWarning
+      - pattern: LogError
+      - pattern: LogDebug
+      - pattern: LogTrace
+      - pattern: LogCritical
+      - pattern: Log.Information
+      - pattern: Log.Warning
+      - pattern: Log.Error
+      - pattern: Log.Debug
+      - pattern: Logger.Info
+      - pattern: Logger.Warn
+      - pattern: Logger.Error
+      - pattern: Trace.WriteLine
+      - pattern: Debug.WriteLine
+      - pattern: Console.WriteLine
+
+  - id: csharp.weak-random-for-secrets
+    message: System.Random reaches a key, token or secret
+    severity: WARNING
+    languages: [csharp]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    pattern-sources:
+      - pattern: Random
+      - pattern: Random.Next
+      - pattern: Random.NextBytes
+      - pattern: Random.NextDouble
+      - pattern: Random.Shared
+    pattern-sinks:
+      - pattern: "*Token*"
+      - pattern: "*Secret*"
+      - pattern: "*Password*"
+      - pattern: "*Nonce*"
+      - pattern: Aes.Create
+      - pattern: Aes.Key
+      - pattern: Aes.IV
+      - pattern: HMACSHA256
+      - pattern: Rfc2898DeriveBytes
+      - pattern: SymmetricAlgorithm.Key

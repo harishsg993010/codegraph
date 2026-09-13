@@ -24,6 +24,8 @@ pub enum Matcher {
     InPath(String),
     /// A member of a named type: `Type.method`.
     Member { type_name: String, method: String },
+    /// Every member of a named type or package: `subprocess.*`.
+    MembersOf(String),
 }
 
 impl Matcher {
@@ -44,6 +46,9 @@ impl Matcher {
     }
     pub fn member(type_name: &str, method: &str) -> Self {
         Self::Member { type_name: type_name.to_lowercase(), method: method.to_lowercase() }
+    }
+    pub fn members_of(owner: &str) -> Self {
+        Self::MembersOf(owner.to_lowercase())
     }
 
     pub fn resolve<I: IndexQuery>(&self, engine: &Engine<I>) -> Result<Vec<LocalId>> {
@@ -91,6 +96,33 @@ impl Matcher {
                         hits.push(id);
                     }
                 }
+                hits
+            }
+            Matcher::MembersOf(owner) => {
+                // Every owner so named (a package answers to its last
+                // segment), then everything it contains.
+                let mask = codegraph_core::RelationMask::of(&[
+                    codegraph_core::Relation::Method,
+                    codegraph_core::Relation::Contains,
+                ]);
+                let mut hits = Vec::new();
+                for id in engine.by_exact_name_any(owner).into_iter().chain(engine.search_with(owner, false)?) {
+                    let Some(info) = engine.info(id)? else { continue };
+                    let lower = info.name.to_lowercase();
+                    if lower != *owner && lower.rsplit(['/', ':']).next() != Some(owner.as_str()) {
+                        continue;
+                    }
+                    for e in engine.neighbors(id, codegraph_query::Direction::Out, mask)? {
+                        if let Some(m) = engine.info(e.id)?
+                            && (stubs || !m.external)
+                            && !matches!(m.kind, codegraph_core::SymbolKind::Parameter | codegraph_core::SymbolKind::Local | codegraph_core::SymbolKind::Block)
+                        {
+                            hits.push(e.id);
+                        }
+                    }
+                }
+                hits.sort_unstable_by_key(|l| l.get());
+                hits.dedup();
                 hits
             }
             Matcher::Member { type_name, method } => {

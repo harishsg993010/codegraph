@@ -1,0 +1,399 @@
+# codegraph rules — Ruby. Apache-2.0.
+#
+# Rails and Sinatra expose request data through `params`, `request` and
+# `cookies`; those names, as parameters or accessors, are the sources.
+
+rules:
+  - id: ruby.command-injection
+    message: Request data reaches a shell or process spawn
+    severity: ERROR
+    languages: [ruby]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+      - pattern: ARGV
+      - pattern: gets
+      - pattern: ENV
+    pattern-sinks:
+      - pattern: system
+      - pattern: Kernel.system
+      - pattern: exec
+      - pattern: Kernel.exec
+      - pattern: spawn
+      - pattern: Kernel.spawn
+      - pattern: Process.spawn
+      - pattern: "Open3.*"
+      - pattern: IO.popen
+      - pattern: popen
+      - pattern: PTY.spawn
+      - pattern: backtick
+      - pattern: "`"
+      - pattern: "%x"
+    pattern-sanitizers:
+      - pattern: Shellwords.escape
+      - pattern: Shellwords.shellescape
+      - pattern: shellescape
+      - pattern: Shellwords.join
+
+  - id: ruby.code-injection
+    message: Request data reaches eval, send or constantize
+    severity: ERROR
+    languages: [ruby]
+    metadata: { cwe: CWE-95, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: eval
+      - pattern: instance_eval
+      - pattern: class_eval
+      - pattern: module_eval
+      - pattern: Kernel.eval
+      - pattern: send
+      - pattern: public_send
+      - pattern: __send__
+      - pattern: constantize
+      - pattern: safe_constantize
+      - pattern: const_get
+      - pattern: Object.const_get
+      - pattern: instance_variable_set
+      - pattern: instance_variable_get
+      - pattern: define_method
+      - pattern: ERB.new
+      - pattern: Kernel.load
+      - pattern: load
+      - pattern: require
+
+  - id: ruby.sql-injection
+    message: Request data reaches a SQL fragment
+    severity: ERROR
+    languages: [ruby]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: where
+      - pattern: find_by_sql
+      - pattern: execute
+      - pattern: connection.execute
+      - pattern: exec_query
+      - pattern: select_all
+      - pattern: select_one
+      - pattern: select_value
+      - pattern: select_values
+      - pattern: order
+      - pattern: group
+      - pattern: having
+      - pattern: joins
+      - pattern: pluck
+      - pattern: select
+      - pattern: reorder
+      - pattern: update_all
+      - pattern: delete_all
+      - pattern: calculate
+      - pattern: count_by_sql
+      - pattern: Sequel.lit
+      - pattern: DB.run
+      - pattern: DB.fetch
+    pattern-sanitizers:
+      - pattern: sanitize_sql
+      - pattern: sanitize_sql_array
+      - pattern: sanitize_sql_like
+      - pattern: sanitize_sql_for_conditions
+      - pattern: quote
+      - pattern: connection.quote
+      - pattern: quote_string
+      - pattern: quote_table_name
+      - pattern: quote_column_name
+      - pattern: to_i
+      - pattern: Integer
+
+  - id: ruby.path-traversal
+    message: Request data reaches a file operation
+    severity: WARNING
+    languages: [ruby]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: File.open
+      - pattern: File.read
+      - pattern: File.write
+      - pattern: File.readlines
+      - pattern: File.new
+      - pattern: File.delete
+      - pattern: File.unlink
+      - pattern: File.rename
+      - pattern: File.exist?
+      - pattern: File.binread
+      - pattern: File.binwrite
+      - pattern: File.foreach
+      - pattern: IO.read
+      - pattern: IO.readlines
+      - pattern: IO.write
+      - pattern: IO.foreach
+      - pattern: Dir.glob
+      - pattern: Dir.entries
+      - pattern: Dir.mkdir
+      - pattern: FileUtils.rm
+      - pattern: FileUtils.rm_rf
+      - pattern: FileUtils.cp
+      - pattern: FileUtils.mv
+      - pattern: FileUtils.mkdir_p
+      - pattern: Pathname.new
+      - pattern: send_file
+      - pattern: send_data
+      - pattern: render
+      - pattern: Kernel.open
+      - pattern: open
+      - pattern: Tempfile.new
+      - pattern: Zip::File.open
+    pattern-sanitizers:
+      - pattern: File.basename
+      - pattern: File.expand_path
+      - pattern: File.realpath
+      - pattern: Pathname.cleanpath
+      - pattern: cleanpath
+      - pattern: sanitize_filename
+      - pattern: "*sanitize*"
+
+  - id: ruby.ssrf
+    message: Request data reaches an outbound HTTP request
+    severity: WARNING
+    languages: [ruby]
+    metadata: { cwe: CWE-918, owasp: "A10:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: Net::HTTP.get
+      - pattern: Net::HTTP.get_response
+      - pattern: Net::HTTP.post
+      - pattern: Net::HTTP.post_form
+      - pattern: Net::HTTP.start
+      - pattern: Net::HTTP.new
+      - pattern: URI.open
+      - pattern: URI.parse
+      - pattern: URI
+      - pattern: open-uri
+      - pattern: HTTParty.get
+      - pattern: HTTParty.post
+      - pattern: Faraday.get
+      - pattern: Faraday.post
+      - pattern: Faraday.new
+      - pattern: RestClient.get
+      - pattern: RestClient.post
+      - pattern: RestClient::Request.execute
+      - pattern: Excon.get
+      - pattern: HTTP.get
+      - pattern: HTTP.post
+      - pattern: Typhoeus.get
+      - pattern: Curl.get
+      - pattern: Curl::Easy.perform
+
+  - id: ruby.open-redirect
+    message: Request data reaches a redirect
+    severity: WARNING
+    languages: [ruby]
+    metadata: { cwe: CWE-601, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: redirect_to
+      - pattern: redirect
+      - pattern: redirect_back
+    pattern-sanitizers:
+      - pattern: url_for
+      - pattern: "*safe_redirect*"
+
+  - id: ruby.xss
+    message: Request data reaches HTML marked safe
+    severity: WARNING
+    languages: [ruby]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: html_safe
+      - pattern: raw
+      - pattern: content_tag
+      - pattern: link_to
+      - pattern: render_to_string
+      - pattern: ERB::Util.html_escape
+      - pattern: Haml::Util.escape_html
+    pattern-sanitizers:
+      - pattern: sanitize
+      - pattern: strip_tags
+      - pattern: html_escape
+      - pattern: h
+      - pattern: ERB::Util.h
+      - pattern: escape_once
+      - pattern: Loofah.fragment
+      - pattern: Rails::Html::SafeListSanitizer
+
+  - id: ruby.deserialization
+    message: Request data reaches Marshal or an unsafe YAML load
+    severity: ERROR
+    languages: [ruby]
+    metadata: { cwe: CWE-502, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: Marshal.load
+      - pattern: Marshal.restore
+      - pattern: YAML.load
+      - pattern: YAML.load_file
+      - pattern: YAML.unsafe_load
+      - pattern: Psych.load
+      - pattern: Psych.unsafe_load
+      - pattern: Oj.load
+      - pattern: Oj.object_load
+      - pattern: JSON.load
+      - pattern: CSV.load
+    pattern-sanitizers:
+      - pattern: YAML.safe_load
+      - pattern: Psych.safe_load
+      - pattern: JSON.parse
+
+  - id: ruby.xxe
+    message: Request data reaches an XML parser that may resolve entities
+    severity: WARNING
+    languages: [ruby]
+    metadata: { cwe: CWE-611, owasp: "A05:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: cookies
+    pattern-sinks:
+      - pattern: Nokogiri::XML
+      - pattern: Nokogiri::XML::Document.parse
+      - pattern: Nokogiri::XML.parse
+      - pattern: REXML::Document.new
+      - pattern: LibXML::XML::Document.string
+      - pattern: XML::Document.string
+      - pattern: Ox.parse
+      - pattern: Ox.load
+
+  - id: ruby.mass-assignment
+    message: Request parameters reach a model update without permitting
+    severity: WARNING
+    languages: [ruby]
+    metadata: { cwe: CWE-915, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+    pattern-sinks:
+      - pattern: update_attributes
+      - pattern: update_attributes!
+      - pattern: assign_attributes
+      - pattern: attributes=
+      - pattern: create
+      - pattern: create!
+      - pattern: update
+      - pattern: update!
+      - pattern: new
+    pattern-sanitizers:
+      - pattern: permit
+      - pattern: require
+      - pattern: slice
+
+  - id: ruby.regex-injection
+    message: Request data reaches a Regexp built from a string
+    severity: INFO
+    languages: [ruby]
+    metadata: { cwe: CWE-1333 }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Regexp.new
+      - pattern: Regexp.union
+      - pattern: match
+      - pattern: match?
+      - pattern: =~
+    pattern-sanitizers:
+      - pattern: Regexp.escape
+      - pattern: Regexp.quote
+
+  - id: ruby.header-injection
+    message: Request data reaches a response header or cookie
+    severity: INFO
+    languages: [ruby]
+    metadata: { cwe: CWE-113 }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: headers
+      - pattern: response.headers
+      - pattern: set_header
+      - pattern: cookies
+      - pattern: response.set_cookie
+      - pattern: set_cookie
+
+  - id: ruby.log-injection
+    message: Request data reaches a log line unescaped
+    severity: INFO
+    languages: [ruby]
+    metadata: { cwe: CWE-117 }
+    pattern-sources:
+      - pattern: params
+      - pattern: request
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: logger.info
+      - pattern: logger.warn
+      - pattern: logger.error
+      - pattern: logger.debug
+      - pattern: Rails.logger.info
+      - pattern: Rails.logger.warn
+      - pattern: Rails.logger.error
+      - pattern: Rails.logger.debug
+      - pattern: puts
+      - pattern: print
+      - pattern: syslog
+
+  - id: ruby.weak-random-for-secrets
+    message: Kernel#rand reaches a token, key or secret
+    severity: WARNING
+    languages: [ruby]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    pattern-sources:
+      - pattern: rand
+      - pattern: Kernel.rand
+      - pattern: Random.rand
+      - pattern: Random.new
+      - pattern: srand
+    pattern-sinks:
+      - pattern: "*token*"
+      - pattern: "*secret*"
+      - pattern: "*password*"
+      - pattern: "*nonce*"
+      - pattern: OpenSSL::Cipher
+      - pattern: OpenSSL::HMAC.hexdigest
+      - pattern: JWT.encode

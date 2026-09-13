@@ -26,7 +26,8 @@
 //! A `pattern` names **symbols**, not code: the graph is already the parse.
 //! `Name` is an exact name; `Name*` a prefix; `*Name` a suffix; `*Name*`
 //! anything containing it; `Owner.Name` a member of a type or package
-//! (`os/exec` answers to `exec`; `a::b` splits like `a.b`). The long forms
+//! (`os/exec` answers to `exec`; `a::b` splits like `a.b`); `Owner.*` every
+//! member of one. The long forms
 //! `name:`, `prefix:`, `suffix:`, `contains:`, `member: [Owner, Name]` and
 //! `path:` (every symbol in files whose path contains it) say the same
 //! thing without the glob. Names fold case.
@@ -197,6 +198,14 @@ pub fn parse_pattern(p: &str) -> Result<Matcher, String> {
     let p = p.trim();
     if p.is_empty() {
         return Err("empty pattern".into());
+    }
+    // `Owner.*`: every member of a type or package.
+    if let Some(owner) = p.strip_suffix(".*").or_else(|| p.strip_suffix("::*")) {
+        let owner = owner.rsplit(['.', '/', ':']).next().unwrap_or(owner);
+        if owner.is_empty() || owner.contains('*') {
+            return Err(format!("pattern {p:?}: `Owner.*` needs an owner"));
+        }
+        return Ok(Matcher::members_of(owner));
     }
     let inner = p.trim_matches('*');
     if inner.is_empty() || inner.contains('*') {
@@ -419,6 +428,8 @@ mod tests {
         assert_eq!(parse_pattern("os.path.join").unwrap(), Matcher::member("path", "join"));
         assert_eq!(parse_pattern("code.gitea.io/gitea/modules/git.Command").unwrap(), Matcher::member("git", "command"));
         assert_eq!(parse_pattern("std::process::Command").unwrap(), Matcher::member("process", "command"));
+        assert_eq!(parse_pattern("subprocess.*").unwrap(), Matcher::members_of("subprocess"));
+        assert_eq!(parse_pattern("os/exec.*").unwrap(), Matcher::members_of("exec"));
         assert!(parse_pattern("a*b").is_err());
         assert!(parse_pattern("").is_err());
     }

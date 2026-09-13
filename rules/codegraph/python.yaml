@@ -1,0 +1,415 @@
+# codegraph rules — Python. Apache-2.0, like the rest of the repository.
+#
+# A source is what produces an untrusted value: a request parameter by
+# convention (`request`, `req`), a framework accessor whose result is
+# external data, `sys.argv`, `input`, an environment read. A sink is the
+# library call that must not see it unescaped. Sanitisers are the calls
+# that make it safe on the way. Every name is a symbol in the graph, not
+# a text pattern: see docs/phase13-results.md.
+
+rules:
+  - id: python.command-injection
+    message: Request data reaches a shell or process spawn
+    severity: ERROR
+    languages: [python]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+      - pattern: argv
+      - pattern: input
+      - pattern: os.getenv
+      - pattern: os.environ
+      - pattern: sys.stdin
+      - pattern: event            # AWS Lambda handler(event, context)
+    pattern-sinks:
+      - pattern: "subprocess.*"
+      - pattern: os.system
+      - pattern: os.popen
+      - pattern: os.execl
+      - pattern: os.execle
+      - pattern: os.execlp
+      - pattern: os.execv
+      - pattern: os.execve
+      - pattern: os.execvp
+      - pattern: os.spawnl
+      - pattern: os.spawnv
+      - pattern: os.posix_spawn
+      - pattern: asyncio.create_subprocess_shell
+      - pattern: asyncio.create_subprocess_exec
+      - pattern: commands.getoutput
+      - pattern: commands.getstatusoutput
+      - pattern: pty.spawn
+    pattern-sanitizers:
+      - pattern: shlex.quote
+      - pattern: shlex.split
+      - pattern: pipes.quote
+
+  - id: python.code-injection
+    message: Request data reaches eval or exec
+    severity: ERROR
+    languages: [python]
+    metadata: { cwe: CWE-95, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+      - pattern: argv
+      - pattern: input
+      - pattern: event
+    pattern-sinks:
+      - pattern: eval
+      - pattern: exec
+      - pattern: compile
+      - pattern: execfile
+      - pattern: importlib.import_module
+      - pattern: __import__
+    pattern-sanitizers:
+      - pattern: ast.literal_eval
+
+  - id: python.sql-injection
+    message: Request data reaches a SQL execution call
+    severity: ERROR
+    languages: [python]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+      - pattern: argv
+      - pattern: input
+      - pattern: event
+    pattern-sinks:
+      - pattern: execute
+      - pattern: executemany
+      - pattern: executescript
+      - pattern: cursor.execute
+      - pattern: connection.execute
+      - pattern: engine.execute
+      - pattern: session.execute
+      - pattern: sqlalchemy.text
+      - pattern: text
+      - pattern: raw
+      - pattern: "*raw_query*"
+      - pattern: RawSQL
+      - pattern: extra                # Django QuerySet.extra
+      - pattern: objects.raw
+    pattern-sanitizers:
+      - pattern: "*escape*"
+      - pattern: "*quote_ident*"
+      - pattern: "*parameterize*"
+
+  - id: python.path-traversal
+    message: Request data reaches a file open or path operation
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+      - pattern: "*upload*"
+      - pattern: argv
+      - pattern: input
+      - pattern: event
+    pattern-sinks:
+      - pattern: open
+      - pattern: io.open
+      - pattern: os.open
+      - pattern: os.remove
+      - pattern: os.unlink
+      - pattern: os.rmdir
+      - pattern: os.rename
+      - pattern: os.makedirs
+      - pattern: os.mkdir
+      - pattern: os.listdir
+      - pattern: os.chmod
+      - pattern: os.chown
+      - pattern: shutil.copy
+      - pattern: shutil.copyfile
+      - pattern: shutil.move
+      - pattern: shutil.rmtree
+      - pattern: send_file
+      - pattern: send_from_directory
+      - pattern: FileResponse
+      - pattern: pathlib.Path
+      - pattern: Path.open
+      - pattern: Path.read_text
+      - pattern: Path.write_text
+      - pattern: tarfile.open
+      - pattern: zipfile.ZipFile
+    pattern-sanitizers:
+      - pattern: os.path.realpath
+      - pattern: os.path.normpath
+      - pattern: os.path.abspath
+      - pattern: os.path.basename
+      - pattern: secure_filename
+      - pattern: safe_join
+      - pattern: "*sanitize*"
+
+  - id: python.ssrf
+    message: Request data reaches an outbound HTTP request
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-918, owasp: "A10:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+      - pattern: event
+    pattern-sinks:
+      - pattern: requests.get
+      - pattern: requests.post
+      - pattern: requests.put
+      - pattern: requests.delete
+      - pattern: requests.head
+      - pattern: requests.patch
+      - pattern: requests.request
+      - pattern: Session.get
+      - pattern: Session.post
+      - pattern: Session.request
+      - pattern: urllib.request.urlopen
+      - pattern: urlopen
+      - pattern: urllib.request.Request
+      - pattern: httpx.get
+      - pattern: httpx.post
+      - pattern: httpx.request
+      - pattern: AsyncClient.get
+      - pattern: AsyncClient.post
+      - pattern: aiohttp.ClientSession
+      - pattern: ClientSession.get
+      - pattern: ClientSession.post
+      - pattern: http.client.HTTPConnection
+      - pattern: http.client.HTTPSConnection
+      - pattern: urllib3.PoolManager
+      - pattern: pycurl.Curl
+
+  - id: python.open-redirect
+    message: Request data reaches a redirect target
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-601, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: redirect
+      - pattern: HttpResponseRedirect
+      - pattern: HttpResponsePermanentRedirect
+      - pattern: RedirectResponse
+    pattern-sanitizers:
+      - pattern: url_has_allowed_host_and_scheme
+      - pattern: is_safe_url
+      - pattern: "*safe_redirect*"
+
+  - id: python.deserialization
+    message: Request data reaches an unsafe deserialiser
+    severity: ERROR
+    languages: [python]
+    metadata: { cwe: CWE-502, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+      - pattern: event
+      - pattern: sys.stdin
+    pattern-sinks:
+      - pattern: pickle.load
+      - pattern: pickle.loads
+      - pattern: cPickle.load
+      - pattern: cPickle.loads
+      - pattern: dill.load
+      - pattern: dill.loads
+      - pattern: shelve.open
+      - pattern: marshal.load
+      - pattern: marshal.loads
+      - pattern: yaml.load
+      - pattern: yaml.unsafe_load
+      - pattern: yaml.load_all
+      - pattern: jsonpickle.decode
+      - pattern: torch.load
+    pattern-sanitizers:
+      - pattern: yaml.safe_load
+      - pattern: yaml.safe_load_all
+
+  - id: python.template-injection
+    message: Request data reaches a template compiled from a string
+    severity: ERROR
+    languages: [python]
+    metadata: { cwe: CWE-1336, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: render_template_string
+      - pattern: jinja2.Template
+      - pattern: Template
+      - pattern: Environment.from_string
+      - pattern: from_string
+      - pattern: mako.template.Template
+      - pattern: django.template.Template
+
+  - id: python.xss
+    message: Request data reaches a response marked safe for HTML
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: Markup
+      - pattern: markupsafe.Markup
+      - pattern: mark_safe
+      - pattern: format_html
+      - pattern: HttpResponse
+      - pattern: make_response
+      - pattern: HTMLResponse
+    pattern-sanitizers:
+      - pattern: escape
+      - pattern: html.escape
+      - pattern: markupsafe.escape
+      - pattern: bleach.clean
+      - pattern: nh3.clean
+
+  - id: python.xxe
+    message: Request data reaches an XML parser that resolves external entities
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-611, owasp: "A05:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: xml.etree.ElementTree.fromstring
+      - pattern: ElementTree.fromstring
+      - pattern: ElementTree.parse
+      - pattern: xml.dom.minidom.parseString
+      - pattern: minidom.parseString
+      - pattern: minidom.parse
+      - pattern: xml.sax.parseString
+      - pattern: xml.sax.parse
+      - pattern: lxml.etree.fromstring
+      - pattern: etree.fromstring
+      - pattern: etree.XML
+      - pattern: etree.parse
+      - pattern: xml.dom.pulldom.parseString
+    pattern-sanitizers:
+      - pattern: "defusedxml.*"
+
+  - id: python.ldap-injection
+    message: Request data reaches an LDAP query
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-90, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: search_s
+      - pattern: search_st
+      - pattern: search_ext
+      - pattern: search_ext_s
+      - pattern: ldap3.Connection.search
+      - pattern: Connection.search
+    pattern-sanitizers:
+      - pattern: ldap.filter.escape_filter_chars
+      - pattern: escape_filter_chars
+      - pattern: escape_dn_chars
+      - pattern: escape_rdn
+
+  - id: python.xpath-injection
+    message: Request data reaches an XPath query
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-643, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: xpath
+      - pattern: etree.XPath
+      - pattern: XPath
+      - pattern: findall
+      - pattern: iterfind
+
+  - id: python.nosql-injection
+    message: Request data reaches a NoSQL query built from it
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-943, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: find
+      - pattern: find_one
+      - pattern: aggregate
+      - pattern: update_one
+      - pattern: update_many
+      - pattern: delete_one
+      - pattern: delete_many
+      - pattern: Collection.find
+      - pattern: Collection.find_one
+
+  - id: python.log-injection
+    message: Request data reaches a log line unescaped
+    severity: INFO
+    languages: [python]
+    metadata: { cwe: CWE-117 }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: logging.info
+      - pattern: logging.warning
+      - pattern: logging.error
+      - pattern: logging.debug
+      - pattern: logger.info
+      - pattern: logger.warning
+      - pattern: logger.error
+      - pattern: logger.debug
+
+  - id: python.weak-crypto-key-from-random
+    message: A non-cryptographic random value reaches key or token material
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    pattern-sources:
+      - pattern: random.random
+      - pattern: random.randint
+      - pattern: random.randrange
+      - pattern: random.choice
+      - pattern: random.getrandbits
+      - pattern: random.uniform
+    pattern-sinks:
+      - pattern: "*token*"
+      - pattern: "*secret*"
+      - pattern: "*password*"
+      - pattern: Fernet
+      - pattern: AES.new
+      - pattern: hmac.new
+      - pattern: jwt.encode
+
+  - id: python.tempfile-from-input
+    message: Request data names a temporary file
+    severity: INFO
+    languages: [python]
+    metadata: { cwe: CWE-377 }
+    pattern-sources:
+      - pattern: request
+      - pattern: req
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: tempfile.mktemp
+      - pattern: tempfile.NamedTemporaryFile
+      - pattern: tempfile.mkstemp

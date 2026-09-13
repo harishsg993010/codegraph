@@ -137,6 +137,37 @@ library stubs.
 | each rule | 20–120 ms after the store is open |
 | starter specs (`--presets`, taint mode, field-test excludes) | 361 / 7 / 46 — up from 20 / 7 / 20 in Phase 11 because a source pattern now also names **parameters** (`*request*` matches every `request` parameter), which is what a taint question means by a source |
 
+## The codegraph rule set
+
+`rules/codegraph/` is the rule set proper: 108 rules, one file per
+language (Python, JavaScript/TypeScript/TSX, Java, Go, Ruby, C#, C/C++,
+Rust), written for this format from the public facts of each platform —
+which library calls spawn a process, run SQL, open a path, fetch a URL,
+redirect, render HTML, deserialise, parse XML, evaluate an expression,
+load code, or take a key; which calls make a value safe; and where
+untrusted input enters (a handler's request parameter by each framework's
+convention, `argv`, the environment, stdin, sockets). Every rule names
+its CWE and OWASP category. It is Apache-2.0 like the rest of the
+repository, and is a starting point: `pattern-not` and `paths` narrow it
+to a codebase, `.codegraph-rules.yaml` in the tree overrides nothing and
+adds.
+
+```
+$ codegraph audit ./gitea --kind taint --rules rules/codegraph
+go.command-injection [ERROR] — A request value reaches a process spawn
+  1411 sources x 2 sinks, 2 sinks searched, 97 finding(s) (130 ms)
+go.path-traversal [WARNING] — A request value reaches a file operation
+  1409 sources x 14 sinks, 14 sinks searched, 142 finding(s) (194 ms)
+...
+```
+
+All 108 rules run on Gitea in 6.6 s including the store open; the
+Python, Ruby, Java, C#, C and Rust rules find 0 sources or 0 sinks on a
+Go/TypeScript corpus, as they should. The Go sources (`r`, `req`,
+`*Request`, `c`) are broad by design — the graph holds no types, so
+"every `*http.Request`" is a naming convention — and the findings are
+leads, ranked live-first, with the path on every one.
+
 ## Limits, stated
 
 - Sources are named, not typed. The graph does not hold parameter types,

@@ -1,0 +1,389 @@
+# codegraph rules — JavaScript, TypeScript, TSX. Apache-2.0.
+#
+# Sources are the request objects web frameworks hand a handler
+# (`req`, `request`, `ctx`, `event`) and the browser's inputs; sinks the
+# calls that must not see them raw. See docs/phase13-results.md.
+
+rules:
+  - id: javascript.command-injection
+    message: Request data reaches a child process
+    severity: ERROR
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-78, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx               # Koa
+      - pattern: event             # Lambda, serverless
+      - pattern: process.argv
+      - pattern: process.env
+    pattern-sinks:
+      - pattern: "child_process.*"
+      - pattern: exec
+      - pattern: execSync
+      - pattern: execFile
+      - pattern: execFileSync
+      - pattern: spawn
+      - pattern: spawnSync
+      - pattern: fork
+      - pattern: shelljs.exec
+      - pattern: execa
+      - pattern: execa.command
+      - pattern: execaCommand
+    pattern-sanitizers:
+      - pattern: shellescape
+      - pattern: shell-quote.quote
+      - pattern: quote
+
+  - id: javascript.code-injection
+    message: Request data reaches eval, Function or a timer taking source text
+    severity: ERROR
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-95, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+      - pattern: event
+      - pattern: location
+      - pattern: document.location
+      - pattern: window.location
+    pattern-sinks:
+      - pattern: eval
+      - pattern: Function
+      - pattern: setTimeout
+      - pattern: setInterval
+      - pattern: vm.runInNewContext
+      - pattern: vm.runInThisContext
+      - pattern: vm.runInContext
+      - pattern: vm.Script
+      - pattern: vm.compileFunction
+
+  - id: javascript.sql-injection
+    message: Request data reaches a SQL query call
+    severity: ERROR
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-89, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+      - pattern: event
+    pattern-sinks:
+      - pattern: query
+      - pattern: connection.query
+      - pattern: pool.query
+      - pattern: client.query
+      - pattern: raw
+      - pattern: knex.raw
+      - pattern: sequelize.query
+      - pattern: $queryRawUnsafe
+      - pattern: $executeRawUnsafe
+      - pattern: db.run
+      - pattern: db.all
+      - pattern: db.get
+      - pattern: db.exec
+      - pattern: prepare
+    pattern-sanitizers:
+      - pattern: escape
+      - pattern: mysql.escape
+      - pattern: escapeId
+      - pattern: format
+      - pattern: pg-format
+
+  - id: javascript.path-traversal
+    message: Request data reaches a filesystem call
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-22, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+      - pattern: event
+    pattern-sinks:
+      - pattern: "fs.*"
+      - pattern: readFile
+      - pattern: readFileSync
+      - pattern: writeFile
+      - pattern: writeFileSync
+      - pattern: createReadStream
+      - pattern: createWriteStream
+      - pattern: unlink
+      - pattern: unlinkSync
+      - pattern: rm
+      - pattern: rmSync
+      - pattern: readdir
+      - pattern: readdirSync
+      - pattern: sendFile
+      - pattern: res.sendFile
+      - pattern: res.download
+      - pattern: download
+      - pattern: require
+    pattern-sanitizers:
+      - pattern: path.basename
+      - pattern: path.normalize
+      - pattern: sanitize-filename
+      - pattern: sanitizeFilename
+
+  - id: javascript.ssrf
+    message: Request data reaches an outbound HTTP request
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-918, owasp: "A10:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+      - pattern: event
+    pattern-sinks:
+      - pattern: fetch
+      - pattern: axios
+      - pattern: axios.get
+      - pattern: axios.post
+      - pattern: axios.request
+      - pattern: http.get
+      - pattern: http.request
+      - pattern: https.get
+      - pattern: https.request
+      - pattern: got
+      - pattern: got.get
+      - pattern: got.post
+      - pattern: superagent.get
+      - pattern: superagent.post
+      - pattern: undici.request
+      - pattern: undici.fetch
+
+  - id: javascript.open-redirect
+    message: Request data reaches a redirect
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-601, owasp: "A01:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+      - pattern: location
+      - pattern: window.location
+    pattern-sinks:
+      - pattern: redirect
+      - pattern: res.redirect
+      - pattern: ctx.redirect
+      - pattern: location.assign
+      - pattern: location.replace
+      - pattern: window.open
+
+  - id: javascript.dom-xss
+    message: Untrusted data reaches an HTML sink in the DOM
+    severity: ERROR
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: location
+      - pattern: document.location
+      - pattern: window.location
+      - pattern: location.hash
+      - pattern: location.search
+      - pattern: document.referrer
+      - pattern: document.cookie
+      - pattern: window.name
+      - pattern: URLSearchParams
+      - pattern: postMessage
+      - pattern: localStorage.getItem
+      - pattern: sessionStorage.getItem
+    pattern-sinks:
+      - pattern: innerHTML
+      - pattern: outerHTML
+      - pattern: insertAdjacentHTML
+      - pattern: document.write
+      - pattern: document.writeln
+      - pattern: dangerouslySetInnerHTML
+      - pattern: bypassSecurityTrustHtml
+      - pattern: bypassSecurityTrustScript
+      - pattern: bypassSecurityTrustUrl
+      - pattern: bypassSecurityTrustResourceUrl
+      - pattern: $.html
+      - pattern: jQuery.html
+      - pattern: html
+      - pattern: append
+      - pattern: prepend
+      - pattern: after
+      - pattern: before
+      - pattern: v-html
+      - pattern: srcdoc
+    pattern-sanitizers:
+      - pattern: DOMPurify.sanitize
+      - pattern: sanitize
+      - pattern: escapeHtml
+      - pattern: escape
+      - pattern: encodeURIComponent
+
+  - id: javascript.reflected-xss
+    message: Request data reaches a response body unescaped
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-79, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+    pattern-sinks:
+      - pattern: res.send
+      - pattern: res.write
+      - pattern: res.end
+      - pattern: ctx.body
+      - pattern: send
+      - pattern: write
+    pattern-sanitizers:
+      - pattern: escapeHtml
+      - pattern: escape
+      - pattern: DOMPurify.sanitize
+      - pattern: sanitize
+      - pattern: he.encode
+      - pattern: xss
+
+  - id: javascript.deserialization
+    message: Request data reaches an unsafe deserialiser
+    severity: ERROR
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-502, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+      - pattern: event
+    pattern-sinks:
+      - pattern: unserialize
+      - pattern: node-serialize.unserialize
+      - pattern: deserialize
+      - pattern: yaml.load
+      - pattern: js-yaml.load
+      - pattern: safeLoad
+      - pattern: JSON.parse
+    pattern-sanitizers:
+      - pattern: yaml.safeLoad
+
+  - id: javascript.prototype-pollution
+    message: Request data reaches a deep merge or property assignment by key
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-1321, owasp: "A08:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+      - pattern: event
+    pattern-sinks:
+      - pattern: merge
+      - pattern: _.merge
+      - pattern: lodash.merge
+      - pattern: _.defaultsDeep
+      - pattern: _.set
+      - pattern: _.setWith
+      - pattern: deepmerge
+      - pattern: extend
+      - pattern: $.extend
+      - pattern: Object.assign
+
+  - id: javascript.regex-injection
+    message: Request data reaches a RegExp built from a string
+    severity: INFO
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-1333 }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+    pattern-sinks:
+      - pattern: RegExp
+    pattern-sanitizers:
+      - pattern: escapeRegExp
+      - pattern: _.escapeRegExp
+      - pattern: escapeStringRegexp
+
+  - id: javascript.nosql-injection
+    message: Request data reaches a MongoDB query
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-943, owasp: "A03:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+    pattern-sinks:
+      - pattern: find
+      - pattern: findOne
+      - pattern: findOneAndUpdate
+      - pattern: updateOne
+      - pattern: updateMany
+      - pattern: deleteOne
+      - pattern: deleteMany
+      - pattern: aggregate
+      - pattern: $where
+    pattern-sanitizers:
+      - pattern: mongoSanitize
+      - pattern: sanitize
+
+  - id: javascript.xxe
+    message: Request data reaches an XML parser with entity expansion
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-611, owasp: "A05:2021" }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+    pattern-sinks:
+      - pattern: libxmljs.parseXml
+      - pattern: parseXml
+      - pattern: parseXmlString
+      - pattern: DOMParser.parseFromString
+      - pattern: parseFromString
+      - pattern: xml2js.parseString
+      - pattern: parseString
+
+  - id: javascript.header-injection
+    message: Request data reaches a response header
+    severity: INFO
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-113 }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: ctx
+    pattern-sinks:
+      - pattern: res.setHeader
+      - pattern: setHeader
+      - pattern: res.set
+      - pattern: res.header
+      - pattern: res.cookie
+      - pattern: writeHead
+
+  - id: javascript.weak-random-for-secrets
+    message: Math.random reaches a token, secret or key
+    severity: WARNING
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-338, owasp: "A02:2021" }
+    pattern-sources:
+      - pattern: Math.random
+    pattern-sinks:
+      - pattern: "*token*"
+      - pattern: "*secret*"
+      - pattern: "*password*"
+      - pattern: "*apikey*"
+      - pattern: jwt.sign
+      - pattern: createCipheriv
+      - pattern: createHmac
