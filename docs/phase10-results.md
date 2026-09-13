@@ -178,6 +178,7 @@ definition that reaches that read. `explain f.x` prints them:
 | | Phase 9 | now |
 |---|---|---|
 | full index | 19–24 s | 14–17 s (extract 4.6 s, resolve 5.7 s, compact 2.9 s, index 0.6 s) |
+| `diff`, one-line body edit / API change | 0.5 s / 6.0 s | 0.7 s / 5.7 s (628 importers re-extracted; 266 symbols affected within 2 hops, was 302 — the flows through the change are now the matched ones) |
 | rows / edges | 360k / 2.04 M | 352k / 2.18 M |
 | `flows_to` | 686k | 818k (field paths make more, finer facts) |
 | store | 94 + 34 MB | 121 + 36 MB |

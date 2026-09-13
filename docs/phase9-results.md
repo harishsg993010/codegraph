@@ -118,8 +118,8 @@ to run.
 
 | edit | neighbours re-extracted | time | report |
 |---|---|---|---|
-| one-line body edit in `modules/util/truncate.go` | 0 | 0.5 s | 1 change (definition), 1 symbol affected |
-| a parameter added to `EllipsisDisplayString` | 631 (every importer of `util`) | 6.0 s | 1 change (signature), **BREAKS 29 callers**, 302 symbols affected within 2 hops |
+| one-line body edit in `modules/util/truncate.go` | 0 | 0.5–0.7 s | 1 change (definition), 1 symbol affected |
+| a parameter added to `EllipsisDisplayString` | 628 (every importer of `util`) | 5.7–6.0 s | 1 change (signature), **BREAKS 29 callers**, 266–302 symbols affected within 2 hops (the smaller count is after Phase 10's context-sensitive flows) |
 
 The 0.5 s is the copy of a 94 MB segment plus the update; the 6 s is the
 neighbourhood the API change drags in, which is the cost of knowing which

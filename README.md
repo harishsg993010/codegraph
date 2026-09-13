@@ -13,11 +13,11 @@ C#, Ruby.
 
 ```
 $ codegraph index ./gitea
-indexed 3342 files in 19.6s (170 files/s)
-  359643 symbols, 2038524 edges, 1 segment(s)
+indexed 3342 files in 13.7s (244 files/s)
+  351862 symbols, 2183313 edges, 1 segment(s)
 
-$ codegraph diff ./gitea          # after editing modules/util/truncate.go
-1 file(s) changed, 0 deleted, 631 neighbour(s) re-extracted
+$ codegraph diff ./gitea          # after adding a parameter in modules/util/truncate.go
+1 file(s) changed, 0 deleted, 628 neighbour(s) re-extracted
 
 1 change(s), 1 breaking:
 
@@ -25,13 +25,24 @@ $ codegraph diff ./gitea          # after editing modules/util/truncate.go
       calls from     UpdateRun (models/actions/run.go:340) [function]
       calls from     UpdateRunner (models/actions/runner.go:335) [function]
       ...
-    impact (302 symbol(s)):
-      called by        User.ShortName (models/user/user.go:487) [method]
-        called by        ShortName (models/organization/org.go:162) [method]
-      called by        NewIssue (models/issues/issue_update.go:454) [function]
-        flows to         NewIssue(issue) (models/issues/issue_update.go:454) [parameter]
+    impact (267 symbol(s)):
+      called by        UpdateRun (models/actions/run.go:340) [function]
+        called by        ApproveRuns (services/actions/approve.go:21) [function]
+        called by        execRerunPlan (services/actions/rerun.go:195) [function]
       ...
+
+summary: 1 change(s), 1 breaking, 266 symbol(s) affected
+(5.7 s)
+
+$ codegraph audit ./gitea/.codegraph --mode dataflow --exclude _test.go --exclude tests/integration/
+command-injection: 1376 sources x 54 sinks, 54 sinks searched, 284 findings (275 ms)
+sql-injection:     1505 sources x 14 sinks, 14 sinks searched, 7 findings (83 ms)
+path-traversal:    1737 sources x 83 sinks, 83 sinks searched, 46 findings (151 ms)
 ```
+
+Gitea is 3,342 Go/JS/TS files. A one-line body edit re-indexes in 0.6 s
+and diffs in 0.7 s; base + deltas stay edge-for-edge identical to a fresh
+index, which the test suite and `codegraph-verify` check.
 
 ## What is in the graph
 
@@ -75,7 +86,7 @@ that direction, and the limits are stated in the docs.
 
 | command | what it answers |
 |---|---|
-| `index <src> [--store dir] [--full]` | Build the store. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. A one-line edit on a 3,300-file tree is 0.4 s. |
+| `index <src> [--store dir] [--full]` | Build the store. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. A one-line edit on a 3,300-file tree is 0.6 s; a full index is 14–17 s. |
 | `search <store> <query>` | Symbols by name, prefix, substring or path. |
 | `explain <store> <symbol>` | What a symbol is and what it connects to: members, parameters, locals, callers, callees, references, flows in and out, CFG size. `func.local` and `path:name` disambiguate. |
 | `path <store> <a> <b>` | Shortest path between two symbols. |
