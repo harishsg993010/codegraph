@@ -331,7 +331,10 @@ fn rows_in(view: View<'_>, paths: &HashSet<String>) -> Result<HashMap<SymbolKey,
         let mut edges: BTreeMap<(u8, SymbolKey), i64> = BTreeMap::new();
         for e in view.out_edges(id, counted)? {
             let tk = SymbolKind::from_u8(view.kind_raw(e.node)?);
-            if structural(tk) {
+            // An edge into a library stub is not a binding: a call that
+            // stops resolving becomes one, and that must read as a lost
+            // call, not a call that moved.
+            if structural(tk) || view.flags(e.node)? & node_flags::EXTERNAL != 0 {
                 continue;
             }
             *edges.entry((e.relation.as_u8(), view.key(e.node)?)).or_default() += 1;

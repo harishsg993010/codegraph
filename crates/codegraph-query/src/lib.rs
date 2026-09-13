@@ -12,7 +12,10 @@ use codegraph_core::{Confidence, LocalId, Relation, RelationMask, SymbolKey};
 use codegraph_index::{IndexData, IndexQuery};
 use codegraph_store::{Result, Store, View};
 
+pub mod deep;
 pub mod rank;
+
+pub use deep::{DeepHit, DeepQuery, Filter};
 
 /// Edge counts grouped by relation and by confidence.
 pub type EdgeHistogram = (Vec<(Relation, usize)>, Vec<(Confidence, usize)>);
@@ -199,6 +202,38 @@ impl<I: IndexQuery> Engine<I> {
             .map(LocalId::new)
             .filter(|id| view.is_canonical(*id))
             .collect()
+    }
+
+    /// Symbols by bare or qualified name, stubs included: `Command`, or
+    /// `exec.Command` — the member of an owner called `exec`, where a
+    /// package answers to its last segment too (`os/exec`). When the name
+    /// is exactly the spelling of one candidate among several that fold
+    /// together, that one.
+    pub fn by_qualified_name(&self, name: &str) -> Vec<LocalId> {
+        let view = self.view();
+        let exact = |hits: Vec<LocalId>, name: &str| -> Vec<LocalId> {
+            if hits.len() <= 1 {
+                return hits;
+            }
+            let same: Vec<LocalId> = hits.iter().copied().filter(|id| view.name(*id).is_ok_and(|n| n == name)).collect();
+            if same.is_empty() { hits } else { same }
+        };
+        let Some((owner, member)) = name.rsplit_once('.') else {
+            return exact(self.by_name_with_stubs(name), name);
+        };
+        let own = RelationMask::of(&[Relation::Contains, Relation::Method]);
+        let mut out = Vec::new();
+        for id in self.by_name_with_stubs(member) {
+            let Ok(edges) = view.in_edges(id, own) else { continue };
+            for e in edges {
+                let Ok(n) = view.name(e.node) else { continue };
+                if n == owner || n.rsplit(['/', ':']).next() == Some(owner) {
+                    out.push(id);
+                    break;
+                }
+            }
+        }
+        exact(out, member)
     }
 
     /// Symbols whose folded name starts with `prefix`.

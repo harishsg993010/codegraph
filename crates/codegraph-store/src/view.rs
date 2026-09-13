@@ -258,6 +258,39 @@ impl ViewData {
             v.ext_by_source.push(by_source);
             v.ext_target.push(targets);
         }
+
+        // --- orphaned stand-ins ---
+        // An external row (a package, a library stub) is live in every
+        // segment, so nothing removes it when the last file that pointed at
+        // it is re-indexed or deleted — until a full merge. Until then it
+        // would be a symbol nothing connects to, and a store that grew by
+        // deltas would list one more symbol than a fresh index of the same
+        // tree. A stand-in with no edge in either direction (its package's
+        // `contains` aside) is hidden.
+        if n_segs > 1 {
+            let orphans: Vec<u32> = {
+                let view = View::new(segments, &v);
+                let not_owner = RelationMask::ALL.minus(RelationMask::of(&[Relation::Contains]));
+                let mut out = Vec::new();
+                for (i, (_, seg)) in segments.iter().enumerate() {
+                    let flags = seg.node_flags()?;
+                    for (l, f) in flags.iter().enumerate() {
+                        let g = v.bases[i] + l as u32;
+                        if f & node_flags::EXTERNAL == 0 || !v.is_canonical(g) {
+                            continue;
+                        }
+                        let id = LocalId::new(g);
+                        if view.in_edges(id, not_owner)?.is_empty() && view.out_edges(id, RelationMask::ALL)?.is_empty() {
+                            out.push(g);
+                        }
+                    }
+                }
+                out
+            };
+            for g in orphans {
+                v.mark_noncanon(g);
+            }
+        }
         Ok(v)
     }
 

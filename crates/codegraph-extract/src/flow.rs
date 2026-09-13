@@ -77,6 +77,10 @@ enum Op {
     /// Call `k`'s arguments, already registered in `FileExtract::calls`.
     Args { call: u32, args: Vec<(ArgPos, Vec<Src>)>, line: u32 },
     Return { sources: Vec<Src>, line: u32 },
+    /// A read that flows nowhere: a branch condition, an expression
+    /// statement. It is a use — `if size > MAX_UPLOAD_BYTES` references
+    /// the constant — but not a sink.
+    Read { sources: Vec<Src> },
 }
 
 /// A successor label: what the edge assumes.
@@ -1833,8 +1837,14 @@ impl<'a, 'o> Body<'a, 'o> {
             return;
         }
         // Rust `if let`, `while let`: the pattern binds from the value.
-        // Anything else: evaluate for its calls; leaves flow nowhere.
-        let _ = self.leaves(node, ops);
+        // Anything else: evaluate for its calls; the leaves flow nowhere
+        // but they are read.
+        let sources: Vec<Src> = self.leaves(node, ops).into_iter().filter(|s| matches!(s, Src::NonLocal(..) | Src::Local(_) | Src::LocalAny(_))).collect();
+        // An import names what it imports; that is the `imports_from`
+        // edge, not a read.
+        if !sources.is_empty() && !self.cfg.is_import(kind) {
+            ops.push(Op::Read { sources });
+        }
     }
 
     fn scan_assign(&mut self, node: Node<'a>, a: &Assign, ops: &mut Vec<Op>) {
@@ -2925,7 +2935,7 @@ impl<'a, 'o> Body<'a, 'o> {
                             note_local_uses(srcs);
                         }
                     }
-                    Op::Return { sources, .. } => note_local_uses(sources),
+                    Op::Return { sources, .. } | Op::Read { sources } => note_local_uses(sources),
                 }
                 match op {
                     Op::Def { target: Target::Local(_), sources, weak, .. } => {
@@ -2970,6 +2980,7 @@ impl<'a, 'o> Body<'a, 'o> {
                         resolve_srcs(sources, &reaching, &mut s.reads, &mut s.direct);
                         sinks.push(s);
                     }
+                    Op::Read { sources } => note_uses(sources, &mut refs, &mut block_uses[bi]),
                 }
             }
         }

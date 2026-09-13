@@ -182,7 +182,7 @@ definition that reaches that read. `explain f.x` prints them:
 | rows / edges | 360k / 2.04 M | 352k / 2.18 M |
 | `flows_to` | 686k | 818k (field paths make more, finer facts) |
 | store | 94 + 34 MB | 121 + 36 MB |
-| dataflow findings (excludes) | 3,297 / 655 / 12,548 | **284 / 7 / 46** |
+| dataflow findings (excludes) | 3,297 / 655 / 12,548 | **284 / 7 / 46** (as measured then; the committed build re-measured in Phase 11 gives 20 / 7 / 20 — see `phase11-results.md`) |
 | dataflow time per spec | 0.3–2.0 s | 0.08–0.3 s |
 | call-graph findings (no excludes) | 58 | 58 |
 | body edit / equivalence | 0.4 s / identical | 0.6 s / identical, 0 dangling |

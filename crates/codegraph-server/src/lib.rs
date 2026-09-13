@@ -62,6 +62,20 @@ pub struct SearchArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeepArgs {
+    /// Free terms and `key:value` filters, space separated; quote a phrase
+    /// (`"rate limit"`). Filters: `kind:function|method|class|variable|
+    /// constant|field|parameter`, `in:<path substring>`, `calls:<name>`,
+    /// `called-by:<name>`, `references:<name>`, `referenced-by:<name>`,
+    /// `reaches:<name>` (call graph), `flows-to:<name>` and
+    /// `flows-from:<name>` (data flow).
+    pub query: String,
+    /// Maximum hits to return.
+    #[serde(default = "d20")]
+    pub limit: usize,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffArgs {
     /// The source directory the store was indexed from.
     pub source: String,
@@ -193,6 +207,38 @@ impl CodeGraph {
                 out
             }
             Err(err) => format!("search failed: {err}"),
+        }
+    }
+
+    /// Find code by what it is connected to, not only by what it is called.
+    #[tool(
+        name = "deep_search",
+        description = "Deep search over the graph. Free terms match symbol names and paths by subword (`upload` finds `MaxUploadSize`), and the insides of functions: their locals and parameters, the callees they call, the variables they read, and the conditions they branch on. Matches spread along calls, references and value flow, so the function that connects two terms scores for both even when neither word is in its name. Filters narrow by structure: `kind:function`, `in:routers/`, `calls:Popen`, `called-by:main`, `references:MaxSize`, `reaches:Exec` (call graph), `flows-to:Exec`, `flows-from:FormValue` (data flow); a library function is named by its bare or qualified name (`exec.Command`). Every hit says why it matched. Use `search` when you know the name; use this when you know what the code does."
+    )]
+    async fn deep_search(&self, Parameters(a): Parameters<DeepArgs>) -> String {
+        let e = &self.engine;
+        let q = codegraph_query::DeepQuery::parse(&a.query);
+        if q.terms.is_empty() && q.filters.is_empty() {
+            return "give some terms, filters, or both — e.g. `upload limit kind:function calls:Open`".into();
+        }
+        match e.deep_search(&q, a.limit) {
+            Ok(hits) => {
+                let filters: Vec<String> = q.filters.iter().map(|f| format!("{f:?}")).collect();
+                let mut out = format!(
+                    "{} hit(s) for terms {:?}{}\n",
+                    hits.len(),
+                    q.terms,
+                    if filters.is_empty() { String::new() } else { format!(" with filters {}", filters.join(", ")) }
+                );
+                for h in &hits {
+                    out.push_str(&format!("\n{:.2}  {} [{}]\n", h.score, describe(&h.info), h.info.kind));
+                    for r in &h.reasons {
+                        out.push_str(&format!("    {r}\n"));
+                    }
+                }
+                out
+            }
+            Err(err) => format!("deep search failed: {err}"),
         }
     }
 

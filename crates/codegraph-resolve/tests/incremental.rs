@@ -192,7 +192,9 @@ fn a_renamed_function_vanishes_and_its_callers_lose_the_edge() {
     assert!(e.by_name("helper").is_empty(), "the old name is still findable");
     let run = e.by_name("run")[0];
     let calls = e.neighbors(run, Direction::Out, RelationMask::of(&[Relation::Calls])).unwrap();
-    assert!(calls.is_empty(), "run still calls something: {calls:?}");
+    // The call now binds to nothing in the corpus: its edge goes to a
+    // library stub named `helper`, flagged external.
+    assert!(calls.iter().all(|h| e.is_stub(h.id)), "run still calls a corpus symbol: {calls:?}");
 }
 
 #[test]

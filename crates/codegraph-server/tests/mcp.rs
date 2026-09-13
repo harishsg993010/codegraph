@@ -85,7 +85,7 @@ async fn the_server_advertises_its_tools() {
     let tools = client.list_all_tools().await.expect("list tools");
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
 
-    for expected in ["search", "explain", "affected", "path", "neighbors", "context", "stats", "audit", "deps", "cfg", "diff"] {
+    for expected in ["search", "explain", "affected", "path", "neighbors", "context", "stats", "audit", "deps", "cfg", "diff", "deep_search"] {
         assert!(names.contains(&expected.to_string()), "missing tool {expected}; got {names:?}");
     }
     // Every tool must carry a description a model can act on, and a schema.

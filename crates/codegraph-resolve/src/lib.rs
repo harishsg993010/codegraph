@@ -83,6 +83,8 @@ pub struct BuildStats {
     pub flows_summarised: usize,
     /// External callee stubs minted for values flowing into unresolved calls.
     pub external_stubs: usize,
+    /// `calls` edges to library stubs: calls the corpus does not define.
+    pub calls_external: usize,
     /// Proxy rows: one per (file, foreign symbol a value flows out of).
     pub proxies: usize,
     /// Local-variable rows, and the `local_flow` edges through them.
@@ -997,10 +999,14 @@ fn resolve_into<'a>(
     // Every binding is recorded so the flow facts can name a callee's
     // parameters and result.
     let mut bound: Vec<Vec<Option<(usize, u32)>>> = vec![Vec::new(); corpus.len()];
+    // Calls with several equally good candidates: neither bound nor
+    // external, so no edge of either kind.
+    let mut ambiguous: Vec<Vec<bool>> = vec![Vec::new(); corpus.len()];
     for &fi in &fresh {
         let f = &corpus[fi];
         let x = f.fresh.expect("fresh");
         bound[fi] = vec![None; x.calls.len()];
+        ambiguous[fi] = vec![false; x.calls.len()];
         for (ci, call) in x.calls.iter().enumerate() {
             let folded = fold(&call.callee);
             let source = call
@@ -1191,7 +1197,10 @@ fn resolve_into<'a>(
                     bound[fi][ci] = Some((cf, cs));
                 }
                 0 => stats.calls_unresolved += 1,
-                _ => stats.calls_ambiguous += 1,
+                _ => {
+                    stats.calls_ambiguous += 1;
+                    ambiguous[fi][ci] = true;
+                }
             }
         }
     }
@@ -1218,6 +1227,7 @@ fn resolve_into<'a>(
             qual_packages: &qual_packages,
             qualifiers: &qualifiers,
             bound: &bound,
+            ambiguous: &ambiguous,
             stats: &mut stats,
             stubs: HashMap::new(),
             proxies: HashMap::new(),
@@ -1558,6 +1568,7 @@ struct FlowResolver<'r, 'a> {
     /// Import qualifier -> the corpus files it names (`lib` in `lib.X`).
     qualifiers: &'r [HashMap<String, Vec<usize>>],
     bound: &'r [Vec<Option<(usize, u32)>>],
+    ambiguous: &'r [Vec<bool>],
     stats: &'r mut BuildStats,
     stubs: HashMap<SymbolKey, LocalId>,
     /// `(file, symbol key)` -> that file's proxy row for the symbol.
@@ -1613,6 +1624,28 @@ impl<'r, 'a> FlowResolver<'r, 'a> {
     fn run(&mut self) {
         for &fi in self.fresh {
             let x = self.corpus[fi].fresh.expect("fresh");
+            // Calls the corpus does not define: a `calls` edge to the
+            // library stub, flagged external, so "who calls `exec.Command`"
+            // has an answer. An ambiguous call gets none — it is neither
+            // external nor known. These edges do not reach any corpus
+            // symbol, so the call-graph questions answer as before.
+            for (k, call) in x.calls.iter().enumerate() {
+                if self.bound[fi][k].is_some() || self.ambiguous[fi][k] {
+                    continue;
+                }
+                let target = self.stub_for(fi, k as u32);
+                let source = call.caller.map_or(self.file_locals[fi], |c| self.sym_locals[fi][c as usize]);
+                self.b.add_edge(Edge {
+                    source,
+                    target,
+                    rel: Relation::Calls,
+                    conf: Confidence::Inferred,
+                    line: call.line,
+                    context: call.receiver.as_deref(),
+                    flags: codegraph_store::edge_flags::EXTERNAL,
+                });
+                self.stats.calls_external += 1;
+            }
             // Facts.
             for fl in &x.flows {
                 // A summarised call's stub does not stand for "every input

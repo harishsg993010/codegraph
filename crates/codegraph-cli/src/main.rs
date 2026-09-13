@@ -77,6 +77,21 @@ enum Command {
     /// on its own schedule — but it makes a store with deltas single-segment
     /// again, which is the fastest shape to query.
     Compact { store: PathBuf },
+    /// Deep search: find code by what it is connected to, not only by what
+    /// it is called. Free terms match names, paths, locals, parameters,
+    /// callees, referenced variables and branch conditions, by subword;
+    /// matches spread along calls, references and value flow, so the
+    /// function that connects two terms scores for both. Filters narrow by
+    /// structure: `kind:function`, `in:routers/`, `calls:Popen`,
+    /// `called-by:main`, `references:MaxSize`, `reaches:Exec`,
+    /// `flows-to:Exec`, `flows-from:FormValue`. Every hit says why.
+    Deep {
+        store: PathBuf,
+        /// Terms and `key:value` filters; quote a phrase.
+        query: Vec<String>,
+        #[arg(short = 'n', long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Search symbols by name or path.
     Search {
         store: PathBuf,
@@ -166,6 +181,11 @@ fn main() -> Result<()> {
         Command::Index { source, store, repo, full } => cmd_index(&source, store, &repo, full),
         Command::Compact { store } => cmd_compact(&store),
         Command::Search { store, query, limit } => cmd_search(&store, &query, limit),
+        Command::Deep { store, query, limit } => {
+            // A shell-quoted phrase arrives as one argument; keep it one term.
+            let joined: Vec<String> = query.iter().map(|a| if a.contains(char::is_whitespace) { format!("\"{a}\"") } else { a.clone() }).collect();
+            cmd_deep(&store, &joined.join(" "), limit)
+        }
         Command::Explain { store, symbol, limit } => cmd_explain(&store, &symbol, limit),
         Command::Path { store, from, to, max_hops } => cmd_path(&store, &from, &to, max_hops),
         Command::Affected { store, symbol, depth, limit } => {
@@ -223,27 +243,16 @@ fn refresh_index(store: &Store, store_dir: &Path) -> Result<&'static str> {
 /// The symbols named by `bare`, which may be `owner.name` — a method of a
 /// type, a parameter or local of a callable, a block (`f.b3`).
 fn by_owned_name(e: &Engine<Index>, bare: &str) -> Result<Vec<LocalId>> {
-    // The name table folds case; when several symbols fold together and
-    // one is spelled exactly as asked, that one is meant.
-    let exact = |hits: Vec<LocalId>, name: &str| -> Vec<LocalId> {
-        if hits.len() <= 1 {
-            return hits;
-        }
-        let same: Vec<LocalId> = hits.iter().copied().filter(|id| e.info(*id).ok().flatten().is_some_and(|i| i.name == name)).collect();
-        if same.is_empty() { hits } else { same }
-    };
-    let Some((owner, name)) = bare.rsplit_once('.') else { return Ok(exact(e.by_name(bare), bare)) };
-    let own = RelationMask::of(&[Relation::Contains, Relation::Method]);
-    let mut out = Vec::new();
-    for id in e.by_name(name) {
-        for h in e.neighbors(id, Direction::In, own)? {
-            if e.info(h.id)?.is_some_and(|o| o.name == owner) {
-                out.push(id);
-                break;
-            }
+    // Corpus symbols first; a library stub answers to its bare name only
+    // when nothing in the corpus has it, and always to its qualified name.
+    if !bare.contains('.') {
+        let hits = e.by_name(bare);
+        if !hits.is_empty() {
+            let same: Vec<LocalId> = hits.iter().copied().filter(|id| e.info(*id).ok().flatten().is_some_and(|i| i.name == bare)).collect();
+            return Ok(if same.is_empty() { hits } else { same });
         }
     }
-    Ok(exact(out, name))
+    Ok(e.by_qualified_name(bare))
 }
 
 fn resolve_one(e: &Engine<Index>, spec: &str) -> Result<LocalId> {
@@ -439,6 +448,32 @@ fn cmd_search(store: &Path, query: &str, limit: usize) -> Result<()> {
     }
     if hits.len() > limit {
         println!("  ... and {} more", hits.len() - limit);
+    }
+    Ok(())
+}
+
+fn cmd_deep(store: &Path, query: &str, limit: usize) -> Result<()> {
+    use codegraph_query::DeepQuery;
+    let e = open(store)?;
+    let q = DeepQuery::parse(query);
+    if q.terms.is_empty() && q.filters.is_empty() {
+        bail!("give some terms, filters, or both — e.g. `upload limit kind:function calls:Open`");
+    }
+    let t = Instant::now();
+    let hits = e.deep_search(&q, limit)?;
+    let filters: Vec<String> = q.filters.iter().map(|f| format!("{f:?}")).collect();
+    println!(
+        "{} hit(s) for terms {:?}{} ({:.0} ms)",
+        hits.len(),
+        q.terms,
+        if filters.is_empty() { String::new() } else { format!(" with filters {}", filters.join(", ")) },
+        t.elapsed().as_secs_f64() * 1e3
+    );
+    for h in &hits {
+        println!("\n  {:.2}  {} {}", h.score, show_in_context(&e, &h.info), tag(&e, &h.info));
+        for r in &h.reasons {
+            println!("          {r}");
+        }
     }
     Ok(())
 }

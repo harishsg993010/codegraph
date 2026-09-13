@@ -5,7 +5,8 @@ A code-graph engine. It reads a source tree, builds a graph of what the code
 value flow — stores it in an mmap'd columnar format that updates
 incrementally, and answers questions over it from a CLI or an MCP server:
 what calls this, what breaks if I change it, does this request parameter
-reach `Popen`, and what does my uncommitted edit actually touch.
+reach `Popen`, where is the upload limit enforced, and what does my
+uncommitted edit actually touch.
 
 Eleven languages through one generic tree-sitter walk driven by per-language
 syntax tables: Python, JavaScript, TypeScript, TSX, Java, C, C++, Go, Rust,
@@ -13,8 +14,21 @@ C#, Ruby.
 
 ```
 $ codegraph index ./gitea
-indexed 3342 files in 13.7s (244 files/s)
-  351862 symbols, 2183313 edges, 1 segment(s)
+indexed 3342 files in 15.7s (213 files/s)
+  352264 symbols, 2299027 edges, 1 segment(s)
+
+$ codegraph deep ./gitea upload size limit -n 2
+2 hit(s) for terms ["upload", "size", "limit"] (246 ms)
+
+  3.38  CheckSizeQuotaExceeded (services/packages/packages.go:362) [function]
+          condition `totalSize+uploadSize > setting.Packages.LimitTotalOwnerSize` matches 'upload'
+          name matches 'size'
+          condition `setting.Packages.LimitTotalOwnerSize > -1` matches 'limit'
+
+  3.38  NewLimitedUploaderKnownSize (services/attachment/attachment.go:48) [function]
+          name matches 'upload'
+          name matches 'size'
+          name matches 'limit'
 
 $ codegraph diff ./gitea          # after adding a parameter in modules/util/truncate.go
 1 file(s) changed, 0 deleted, 628 neighbour(s) re-extracted
@@ -35,9 +49,9 @@ summary: 1 change(s), 1 breaking, 266 symbol(s) affected
 (5.7 s)
 
 $ codegraph audit ./gitea/.codegraph --mode dataflow --exclude _test.go --exclude tests/integration/
-command-injection: 1376 sources x 54 sinks, 54 sinks searched, 284 findings (275 ms)
-sql-injection:     1505 sources x 14 sinks, 14 sinks searched, 7 findings (83 ms)
-path-traversal:    1737 sources x 83 sinks, 83 sinks searched, 46 findings (151 ms)
+command-injection: 1377 sources x 60 sinks, 48 sinks searched, 20 findings (239 ms)
+sql-injection:     1508 sources x 14 sinks, 14 sinks searched, 7 findings (83 ms)
+path-traversal:    1738 sources x 86 sinks, 58 sinks searched, 20 findings (145 ms)
 ```
 
 Gitea is 3,342 Go/JS/TS files. A one-line body edit re-indexes in 0.6 s
@@ -51,9 +65,11 @@ module-level **variables and constants**, class **fields**, and the
 **locals** of every callable. External library functions appear as stubs
 owned by their package.
 
-**Structure.** `calls`, `imports_from`, `inherits` / `extends` /
-`implements` (structural for Go interfaces), `contains`, `method`,
-`references` (a function to the variables and fields it reads or writes).
+**Structure.** `calls` (to corpus callables, and to library stubs for
+calls the corpus does not define, flagged external), `imports_from`,
+`inherits` / `extends` / `implements` (structural for Go interfaces),
+`contains`, `method`, `references` (a function to the variables and
+fields it reads or writes — in a branch condition too).
 
 **Control flow.** A CFG per callable, persisted: `Block` rows with
 `succeeds` edges carrying the branch label and predicate, and `defines` /
@@ -88,6 +104,7 @@ that direction, and the limits are stated in the docs.
 |---|---|
 | `index <src> [--store dir] [--full]` | Build the store. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. A one-line edit on a 3,300-file tree is 0.6 s; a full index is 14–17 s. |
 | `search <store> <query>` | Symbols by name, prefix, substring or path. |
+| `deep <store> <terms and filters>` | **Deep search**: find code by what it is connected to. Terms match names and paths by subword, and the inside of functions — locals, parameters, callees, referenced variables, branch conditions; matches spread along calls, references and value flow, so the function that connects two terms scores for both. Filters: `kind:`, `in:`, `calls:`, `called-by:`, `references:`, `referenced-by:`, `reaches:`, `flows-to:`, `flows-from:`. Every hit says why. |
 | `explain <store> <symbol>` | What a symbol is and what it connects to: members, parameters, locals, callers, callees, references, flows in and out, CFG size. `func.local` and `path:name` disambiguate. |
 | `path <store> <a> <b>` | Shortest path between two symbols. |
 | `affected <store> <symbol>` | Blast radius: what breaks if this changes. |
@@ -98,8 +115,9 @@ that direction, and the limits are stated in the docs.
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
 
 `codegraph-mcp <store>` serves the same questions as MCP tools (`search`,
-`explain`, `cfg`, `affected`, `path`, `neighbors`, `context`, `stats`,
-`audit`, `deps`, `diff`) for a model working in the tree.
+`deep_search`, `explain`, `cfg`, `affected`, `path`, `neighbors`,
+`context`, `stats`, `audit`, `deps`, `diff`) for a model working in the
+tree.
 
 ## Build
 
@@ -121,7 +139,7 @@ cargo test --workspace
 | `codegraph-resolve` | Turns extracted facts into a graph: call binding, imports, heritage, stubs, proxies, flows, locals; the incremental pipeline; `diff`. |
 | `codegraph-store` | The segment format, the manifest, the store-wide `View` over base and delta segments, compaction. |
 | `codegraph-index` | Degrees, hubs, SCC + reachability labels, name and trigram postings; the layered (base + overlay) index. |
-| `codegraph-query` | The query engine: search, explain, walks, paths, blast radius, CFG. |
+| `codegraph-query` | The query engine: search, deep search (`deep.rs`), explain, walks, paths, blast radius, CFG. |
 | `codegraph-security` | Taint specs, matchers, call-graph and dataflow analyses, entrypoints. |
 | `codegraph-cli`, `codegraph-server` | The `codegraph` CLI and the `codegraph-mcp` server. |
 | `codegraph-verify`, `codegraph-probe` | The key-space verification harness (base + deltas must equal a fresh index) and grammar probes. |
@@ -140,6 +158,8 @@ files), the bugs each phase surfaced, and the limits stated plainly:
 - `docs/phase9-results.md` — `diff`.
 - `docs/phase10-results.md` — context sensitivity, aliasing, field
   sensitivity, richer predicates, user summaries, flow-sensitive locals.
+- `docs/phase11-results.md` — `deep` search; condition reads as
+  references; `calls` edges to library stubs.
 
 ## Limits
 
@@ -167,6 +187,10 @@ the rest is fundamental.
 - **Sinks by name**: the starter specs match `Exec`, `Open` by name; a
   database `Exec` and a shell `Exec` are one sink until a spec qualifies
   them.
+- **Deep search** matches what the graph holds — names, paths, locals,
+  parameters, callees, referenced variables, branch predicates — not
+  string literals or comments; spreading is two hops and never through a
+  hub or a library stub.
 
 ## License
 
