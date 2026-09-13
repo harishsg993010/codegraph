@@ -92,6 +92,13 @@ pub struct DeepArgs {
     /// Maximum hits to return.
     #[serde(default = "d20")]
     pub limit: usize,
+    /// How far a match spreads along the graph (default 2). `hops:N` in
+    /// the query says the same.
+    #[serde(default)]
+    pub hops: Option<u32>,
+    /// How many of a term's strongest matches spread (default 400).
+    #[serde(default)]
+    pub seeds: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -104,6 +111,20 @@ pub struct DiffArgs {
     /// Most lines shown per change (default 40).
     #[serde(default = "d40")]
     pub limit: usize,
+    /// A node with more dependents than this is reported and not expanded
+    /// (default 100).
+    #[serde(default = "d100")]
+    pub max_fanout: usize,
+    /// Most symbols traced per change (default 500).
+    #[serde(default = "d500")]
+    pub max_impact: usize,
+}
+
+fn d100() -> usize {
+    100
+}
+fn d500() -> usize {
+    500
 }
 
 fn default_depth() -> u32 {
@@ -174,6 +195,14 @@ pub struct AuditArgs {
     /// loaded the starter specs are not run.
     #[serde(default)]
     pub rules: String,
+    /// Longest path reported, in edges, for every rule (default 12, or the
+    /// rule's own `max-hops`).
+    #[serde(default)]
+    pub max_hops: Option<u32>,
+    /// Call sites a value-flow path may be inside at once (default 6, or
+    /// the rule's own `context-depth`); higher is more precise and slower.
+    #[serde(default)]
+    pub context_depth: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -297,7 +326,13 @@ impl CodeGraph {
     async fn deep_search(&self, Parameters(a): Parameters<DeepArgs>) -> String {
         let e = self.engine();
         let e = &*e;
-        let q = codegraph_query::DeepQuery::parse(&a.query);
+        let mut q = codegraph_query::DeepQuery::parse(&a.query);
+        if let Some(h) = a.hops {
+            q.hops = h;
+        }
+        if let Some(n) = a.seeds {
+            q.seeds = n;
+        }
         if q.terms.is_empty() && q.filters.is_empty() {
             return "give some terms, filters, or both — e.g. `upload limit kind:function calls:Open`".into();
         }
@@ -371,7 +406,7 @@ impl CodeGraph {
     )]
     async fn diff(&self, Parameters(a): Parameters<DiffArgs>) -> String {
         let store_dir = self.engine().store().root().to_path_buf();
-        let opts = codegraph_resolve::DiffOptions { depth: a.depth, ..Default::default() };
+        let opts = codegraph_resolve::DiffOptions { depth: a.depth, fanout: a.max_fanout, max_hits: a.max_impact, ..Default::default() };
         match codegraph_resolve::diff_tree(std::path::Path::new(&a.source), &store_dir, &opts) {
             Ok(r) => r.render(a.limit),
             Err(e) => format!("diff failed: {e:#}"),
@@ -617,6 +652,14 @@ impl CodeGraph {
                  across calls, may-alias by copy and address, library calls by summary. \
                  Missing edges (unresolved calls, reflection) mean missing findings.\n",
             );
+        }
+        for r in &mut rules {
+            if let Some(h) = a.max_hops {
+                r.spec.max_hops = h;
+            }
+            if let Some(d) = a.context_depth {
+                r.spec.context_depth = d;
+            }
         }
         let results = run_rules(&sec, &rules, a.limit);
         out.push_str(&render_text(&results, &|s| describe(s)));

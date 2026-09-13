@@ -84,6 +84,17 @@ a stub with no file at all passes. `pattern-not` names symbols a pattern
 picked up that are not meant; `--exclude PATH` on the command line adds
 to every rule's `paths.exclude`.
 
+Two keys tune the search rather than name symbols: `max-hops` (longest
+path reported, default 12) and `context-depth` (call sites a value-flow
+path may be inside at once before the oldest is forgotten, default 6 —
+higher is more precise through deep call chains and slower). Both can be
+overridden for every rule at once with `--max-hops` and
+`--context-depth` on `audit` (and the MCP tool's arguments of the same
+names). The same principle holds elsewhere: `deep` takes `--hops`,
+`--seeds`, `--reach-limit` (or `hops:N` etc. in the query), `diff` takes
+`--depth`, `--max-fanout`, `--max-impact`, `affected` `--depth`, `path`
+`--max-hops`. No search bound is only a constant.
+
 What a rule cannot say, because the analysis does not do it: a pattern
 over the text of an expression (`$X = request.args[...]`), a
 metavariable, propagators beyond the library summaries. What it says

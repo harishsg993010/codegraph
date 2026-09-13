@@ -145,7 +145,11 @@ pub struct TaintSpec {
     /// When non-empty, only symbols in files of these languages (canonical
     /// names: `python`, `go`, …); library stubs, which have no file, pass.
     pub languages: Vec<String>,
+    /// Longest path reported, in edges.
     pub max_hops: u32,
+    /// Call sites a value-flow path may be inside at once (see
+    /// [`crate::DEFAULT_CONTEXT_DEPTH`]).
+    pub context_depth: usize,
     pub mode: Mode,
 }
 
@@ -178,8 +182,13 @@ impl TaintSpec {
             // Long enough for a realistic call chain, short enough that a
             // pathological graph cannot make one query run forever.
             max_hops: 12,
+            context_depth: crate::DEFAULT_CONTEXT_DEPTH,
             mode: Mode::CallGraph,
         }
+    }
+    pub fn context_depth(mut self, n: usize) -> Self {
+        self.context_depth = n;
+        self
     }
     pub fn mode(mut self, mode: Mode) -> Self {
         self.mode = mode;

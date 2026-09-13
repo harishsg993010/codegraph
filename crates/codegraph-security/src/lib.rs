@@ -215,10 +215,10 @@ impl Arrivals {
 }
 
 /// How many call sites a path may be inside at once before the oldest is
-/// forgotten. Forgetting is the sound direction: an unmatched return may
-/// then leave towards any caller, as a path that began inside a callee
-/// always could.
-const CONTEXT_DEPTH: usize = 6;
+/// forgotten, unless the spec says otherwise. Forgetting is the sound
+/// direction: an unmatched return may then leave towards any caller, as a
+/// path that began inside a callee always could.
+pub const DEFAULT_CONTEXT_DEPTH: usize = 6;
 
 fn can_carry_taint(kind: codegraph_core::SymbolKind) -> bool {
     !matches!(
@@ -395,7 +395,7 @@ impl<'a, I: IndexQuery> Security<'a, I> {
             'sinks: for &sink in &sinks {
                 // The labels do not cover value flow; every sink is searched.
                 searched += 1;
-                let paths = self.value_paths_into(sink, &source_set, &sanitizers, spec.max_hops, &mut arrivals)?;
+                let paths = self.value_paths_into(sink, &source_set, &sanitizers, spec.max_hops, spec.context_depth, &mut arrivals)?;
                 for (src, path) in paths {
                     if findings.len() >= max_findings {
                         break 'sinks;
@@ -640,6 +640,7 @@ impl<'a, I: IndexQuery> Security<'a, I> {
         sources: &std::collections::HashSet<u32>,
         sanitizers: &[LocalId],
         max_hops: u32,
+        context_depth: usize,
         arrivals: &mut Arrivals,
     ) -> Result<Vec<(LocalId, Vec<LocalId>)>> {
         use std::collections::{HashMap, VecDeque};
@@ -674,7 +675,7 @@ impl<'a, I: IndexQuery> Security<'a, I> {
                     stack.pop();
                 }
                 if let Some(l) = leave {
-                    if stack.len() >= CONTEXT_DEPTH {
+                    if stack.len() >= context_depth.max(1) {
                         stack.remove(0);
                     }
                     stack.push(l);

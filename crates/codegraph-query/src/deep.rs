@@ -45,10 +45,29 @@ pub enum Filter {
     FlowsFrom(String),
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeepQuery {
     pub terms: Vec<String>,
     pub filters: Vec<Filter>,
+    /// How far a match spreads: 1 credits neighbours, 2 (the default)
+    /// their neighbours too. `hops:N` in the query, or the CLI flag.
+    pub hops: u32,
+    /// How many of a term's strongest matches spread (default 400).
+    pub seeds: usize,
+    /// Most nodes a `reaches:`/`flows-to:`/`flows-from:` filter expands
+    /// (default 500,000); a larger target set is cut off, and the report
+    /// says so.
+    pub reach_limit: usize,
+}
+
+pub const DEFAULT_HOPS: u32 = 2;
+pub const DEFAULT_SEEDS: usize = 400;
+pub const DEFAULT_REACH_LIMIT: usize = 500_000;
+
+impl Default for DeepQuery {
+    fn default() -> Self {
+        DeepQuery { terms: Vec::new(), filters: Vec::new(), hops: DEFAULT_HOPS, seeds: DEFAULT_SEEDS, reach_limit: DEFAULT_REACH_LIMIT }
+    }
 }
 
 impl DeepQuery {
@@ -74,6 +93,26 @@ impl DeepQuery {
             tokens.push(cur);
         }
         for t in tokens {
+            // Tuning, not filters: `hops:3`, `seeds:1000`, `reach-limit:N`.
+            if let Some((k, v)) = t.split_once(':')
+                && let Ok(n) = v.parse::<usize>()
+            {
+                match k.to_ascii_lowercase().as_str() {
+                    "hops" => {
+                        q.hops = n as u32;
+                        continue;
+                    }
+                    "seeds" => {
+                        q.seeds = n;
+                        continue;
+                    }
+                    "reach-limit" | "reachlimit" => {
+                        q.reach_limit = n;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             let filter = t.split_once(':').and_then(|(k, v)| {
                 if v.is_empty() {
                     return None;
@@ -361,11 +400,11 @@ impl<I: IndexQuery> Engine<I> {
             // of names (`size`) spreads from its best few hundred.
             let mut seeds: Vec<(u32, f32, String)> = m.iter().map(|(id, c)| (*id, c.score, c.reason.clone())).collect();
             seeds.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
-            seeds.truncate(400);
+            seeds.truncate(q.seeds.max(1));
             let hub = self.index.hub_cutoff();
             let mut frontier: Vec<(u32, f32, String, u32)> = seeds.into_iter().map(|(id, s, r)| (id, s, r, 0)).collect();
             let mut hops = 0;
-            while hops < 2 && !frontier.is_empty() && frontier.len() <= 5_000 {
+            while hops < q.hops && !frontier.is_empty() && frontier.len() <= 5_000 {
                 hops += 1;
                 let mut next = Vec::new();
                 for (id, score, _reason, _) in &frontier {
@@ -456,7 +495,7 @@ impl<I: IndexQuery> Engine<I> {
                         queue.push_back(e.node);
                     }
                 }
-                if seen.len() > 500_000 {
+                if seen.len() > q.reach_limit {
                     break;
                 }
             }
@@ -607,6 +646,12 @@ mod tests {
         );
         // An unknown key is a term.
         assert_eq!(DeepQuery::parse("http:server").terms, ["http:server"]);
+        // Tuning keys are consumed.
+        let q = DeepQuery::parse("upload hops:3 seeds:50 reach-limit:1000");
+        assert_eq!(q.terms, ["upload"]);
+        assert!(q.filters.is_empty());
+        assert_eq!((q.hops, q.seeds, q.reach_limit), (3, 50, 1000));
+        assert_eq!(DeepQuery::parse("x").hops, DEFAULT_HOPS);
     }
 
     #[test]

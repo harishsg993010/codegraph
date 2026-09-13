@@ -90,8 +90,14 @@ pub struct Rule {
     pub languages: Vec<String>,
     #[serde(default = "taint", deserialize_with = "de_mode")]
     pub mode: Mode,
+    /// Longest path reported, in edges (default 12).
     #[serde(default, rename = "max-hops")]
     pub max_hops: Option<u32>,
+    /// Call sites a value-flow path may be inside at once before the
+    /// oldest is forgotten (default 6). Higher is more precise through
+    /// deep call chains and slower.
+    #[serde(default, rename = "context-depth")]
+    pub context_depth: Option<usize>,
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
@@ -274,6 +280,9 @@ impl Rule {
         if let Some(h) = self.max_hops {
             spec.max_hops = h;
         }
+        if let Some(d) = self.context_depth {
+            spec.context_depth = d;
+        }
         if spec.sources.is_empty() {
             return Err("no pattern-sources".into());
         }
@@ -423,6 +432,8 @@ rules:
     severity: error
     languages: [go, python]
     metadata: { cwe: CWE-78 }
+    max-hops: 20
+    context-depth: 8
     paths: { exclude: [_test.go] }
     pattern-sources:
       - pattern: "*Request*"
@@ -446,6 +457,7 @@ rules:
         assert_eq!(spec.sanitizers, vec![Matcher::contains("quote")]);
         assert_eq!(spec.excludes, vec![Matcher::in_path("vendor/"), Matcher::in_path("_test.go")]);
         assert_eq!(spec.languages, vec!["go".to_string(), "python".to_string()]);
+        assert_eq!((spec.max_hops, spec.context_depth), (20, 8));
         assert_eq!(r.metadata.get("cwe").map(String::as_str), Some("CWE-78"));
     }
 

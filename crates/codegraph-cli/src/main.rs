@@ -78,6 +78,13 @@ enum Command {
         /// How many hops of impact to trace.
         #[arg(long, default_value_t = 3)]
         depth: u32,
+        /// A node with more dependents than this is reported and not
+        /// expanded (default 100).
+        #[arg(long, default_value_t = 100)]
+        max_fanout: usize,
+        /// Most symbols traced per change (default 500).
+        #[arg(long, default_value_t = 500)]
+        max_impact: usize,
         /// Most impact lines shown per change.
         #[arg(short = 'n', long, default_value_t = 40)]
         limit: usize,
@@ -99,10 +106,20 @@ enum Command {
     /// `flows-to:Exec`, `flows-from:FormValue`. Every hit says why.
     Deep {
         store: PathBuf,
-        /// Terms and `key:value` filters; quote a phrase.
+        /// Terms and `key:value` filters; quote a phrase. `hops:N`,
+        /// `seeds:N` and `reach-limit:N` in the query tune the search too.
         query: Vec<String>,
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
+        /// How far a match spreads along the graph (default 2).
+        #[arg(long)]
+        hops: Option<u32>,
+        /// How many of a term's strongest matches spread (default 400).
+        #[arg(long)]
+        seeds: Option<usize>,
+        /// Most nodes a reachability filter expands (default 500000).
+        #[arg(long)]
+        reach_limit: Option<usize>,
     },
     /// Search symbols by name or path.
     Search {
@@ -170,6 +187,16 @@ enum Command {
         /// WARNING, INFO), for CI.
         #[arg(long, value_name = "SEVERITY")]
         fail_on: Option<String>,
+        /// Longest path reported, in edges, for every rule and starter spec
+        /// (default 12, or the rule's own `max-hops`).
+        #[arg(long)]
+        max_hops: Option<u32>,
+        /// Call sites a value-flow path may be inside at once before the
+        /// oldest is forgotten (default 6, or the rule's own
+        /// `context-depth`). Higher is more precise through deep call
+        /// chains and slower.
+        #[arg(long)]
+        context_depth: Option<usize>,
     },
     /// Which of our code reaches a package.
     Deps {
@@ -219,22 +246,22 @@ fn main() -> Result<()> {
         Command::Watch { source, debounce_ms } => cmd_watch(&source, debounce_ms),
         Command::Compact { store } => cmd_compact(&store),
         Command::Search { store, query, limit } => cmd_search(&store, &query, limit),
-        Command::Deep { store, query, limit } => {
+        Command::Deep { store, query, limit, hops, seeds, reach_limit } => {
             // A shell-quoted phrase arrives as one argument; keep it one term.
             let joined: Vec<String> = query.iter().map(|a| if a.contains(char::is_whitespace) { format!("\"{a}\"") } else { a.clone() }).collect();
-            cmd_deep(&store, &joined.join(" "), limit)
+            cmd_deep(&store, &joined.join(" "), limit, hops, seeds, reach_limit)
         }
         Command::Explain { store, symbol, limit } => cmd_explain(&store, &symbol, limit),
         Command::Path { store, from, to, max_hops } => cmd_path(&store, &from, &to, max_hops),
         Command::Affected { store, symbol, depth, limit } => {
             cmd_affected(&store, &symbol, depth, limit)
         }
-        Command::Audit { store, kind, mode, limit, excludes, rules, presets, format, fail_on } => {
-            cmd_audit(&store, kind, mode, limit, &excludes, &rules, presets, format, fail_on.as_deref())
+        Command::Audit { store, kind, mode, limit, excludes, rules, presets, format, fail_on, max_hops, context_depth } => {
+            cmd_audit(&store, kind, mode, limit, &excludes, &rules, presets, format, fail_on.as_deref(), max_hops, context_depth)
         }
         Command::Cfg { store, symbol } => cmd_cfg(&store, &symbol),
-        Command::Diff { source, repo, depth, limit, fail_on_break } => {
-            cmd_diff(&source, &repo, depth, limit, fail_on_break)
+        Command::Diff { source, repo, depth, max_fanout, max_impact, limit, fail_on_break } => {
+            cmd_diff(&source, &repo, depth, max_fanout, max_impact, limit, fail_on_break)
         }
         Command::Deps { store, package, limit } => cmd_deps(&store, package.as_deref(), limit),
         Command::Stats { store } => cmd_stats(&store),
@@ -642,10 +669,19 @@ fn cmd_search(store: &Path, query: &str, limit: usize) -> Result<()> {
     Ok(())
 }
 
-fn cmd_deep(store: &Path, query: &str, limit: usize) -> Result<()> {
+fn cmd_deep(store: &Path, query: &str, limit: usize, hops: Option<u32>, seeds: Option<usize>, reach_limit: Option<usize>) -> Result<()> {
     use codegraph_query::DeepQuery;
     let e = open(store)?;
-    let q = DeepQuery::parse(query);
+    let mut q = DeepQuery::parse(query);
+    if let Some(h) = hops {
+        q.hops = h;
+    }
+    if let Some(n) = seeds {
+        q.seeds = n;
+    }
+    if let Some(n) = reach_limit {
+        q.reach_limit = n;
+    }
     if q.terms.is_empty() && q.filters.is_empty() {
         bail!("give some terms, filters, or both — e.g. `upload limit kind:function calls:Open`");
     }
@@ -850,7 +886,7 @@ fn cmd_affected(store: &Path, symbol: &str, depth: u32, limit: usize) -> Result<
     Ok(())
 }
 
-fn cmd_diff(source: &Path, repo: &str, depth: u32, limit: usize, fail_on_break: bool) -> Result<()> {
+fn cmd_diff(source: &Path, repo: &str, depth: u32, max_fanout: usize, max_impact: usize, limit: usize, fail_on_break: bool) -> Result<()> {
     use codegraph_resolve::DiffOptions;
     // The diff is against the last commit when git knows the tree, so the
     // store's own state does not matter and is not synced here; without
@@ -871,7 +907,7 @@ fn cmd_diff(source: &Path, repo: &str, depth: u32, limit: usize, fail_on_break: 
     }
     let store_dir = located.store_dir;
     let t = Instant::now();
-    let opts = DiffOptions { repo: repo.to_string(), depth, ..DiffOptions::default() };
+    let opts = DiffOptions { repo: repo.to_string(), depth, fanout: max_fanout, max_hits: max_impact };
     let r = codegraph_resolve::diff_tree(source, &store_dir, &opts)?;
     print!("{}", r.render(limit));
     println!("({:.1} s)", t.elapsed().as_secs_f64());
@@ -921,6 +957,8 @@ fn cmd_audit(
     presets_too: bool,
     format: OutputFormat,
     fail_on: Option<&str>,
+    max_hops: Option<u32>,
+    context_depth: Option<usize>,
 ) -> Result<()> {
     use codegraph_security::{RuleSpec, Severity, load_rules, render_json, render_text, run_rules, tree_rule_paths, worst};
     let fail_on = match fail_on {
@@ -972,6 +1010,12 @@ fn cmd_audit(
     for r in &mut rules {
         for p in excludes {
             r.spec.excludes.push(codegraph_security::Matcher::in_path(p));
+        }
+        if let Some(h) = max_hops {
+            r.spec.max_hops = h;
+        }
+        if let Some(d) = context_depth {
+            r.spec.context_depth = d;
         }
     }
 

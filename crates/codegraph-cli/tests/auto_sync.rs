@@ -119,3 +119,28 @@ fn audit_reads_rule_files_and_the_trees_own() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("nosinks"), "{}", String::from_utf8_lossy(&out.stderr));
 }
+
+#[test]
+fn hop_limits_are_the_users_to_set() {
+    let d = tempfile::tempdir().unwrap();
+    write(d.path(), "app.py", "import subprocess\n\ndef run(cmd):\n    return subprocess.Popen(cmd)\n\ndef handle(request):\n    return run(request)\n");
+    write(d.path(), ".codegraph-rules.yaml", "rules:\n  - id: shell\n    pattern-sources: [request]\n    pattern-sinks: [subprocess.Popen]\n");
+    let tree = d.path().to_str().unwrap();
+    // The flow is request -> cmd -> Popen: found by default, not within one hop.
+    let (out, _) = run(&["audit", tree, "--kind", "taint"]);
+    assert!(out.contains("-> Popen"), "{out}");
+    let (out, _) = run(&["audit", tree, "--kind", "taint", "--max-hops", "1"]);
+    assert!(!out.contains("-> Popen"), "{out}");
+    // A rule's own max-hops is honoured, and the flag overrides it.
+    write(d.path(), ".codegraph-rules.yaml", "rules:\n  - id: shell\n    max-hops: 1\n    context-depth: 2\n    pattern-sources: [request]\n    pattern-sinks: [subprocess.Popen]\n");
+    let (out, _) = run(&["audit", tree, "--kind", "taint"]);
+    assert!(!out.contains("-> Popen"), "{out}");
+    let (out, _) = run(&["audit", tree, "--kind", "taint", "--max-hops", "12"]);
+    assert!(out.contains("-> Popen"), "{out}");
+    // Deep search: with no spreading, a neighbour of a match is not a hit;
+    // the query key and the flag say the same thing.
+    let (out0, _) = run(&["deep", tree, "handle", "kind:function", "hops:0"]);
+    let (out2, _) = run(&["deep", tree, "handle", "kind:function", "--hops", "2"]);
+    assert!(out0.contains("handle (app.py:6)") && !out0.contains("run (app.py:3)"), "{out0}");
+    assert!(out2.contains("run (app.py:3)"), "{out2}");
+}

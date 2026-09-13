@@ -201,13 +201,13 @@ indexed on first use and synced before every answer.
 | `index <src> [--full]` | Build `<src>/.codegraph` explicitly — the other commands do this on first use and keep it current after. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. Changed files are found through git when git is there, by a walk otherwise. A one-line edit on a 3,300-file tree is 0.7 s; a full index is 16–20 s. |
 | `watch <src> [--debounce-ms n]` | Index, then keep the store current: re-index what changes after each quiet period, one line per round. |
 | `search <store> <query>` | Symbols by name, prefix, substring or path. |
-| `deep <store> <terms and filters>` | **Deep search**: find code by what it is connected to. Terms match names and paths by subword, and the inside of functions — locals, parameters, callees, referenced variables, branch conditions; matches spread along calls, references and value flow, so the function that connects two terms scores for both. Filters: `kind:`, `in:`, `calls:`, `called-by:`, `references:`, `referenced-by:`, `reaches:`, `flows-to:`, `flows-from:`. Every hit says why. |
+| `deep <store> <terms and filters> [--hops n] [--seeds n]` | **Deep search**: find code by what it is connected to. Terms match names and paths by subword, and the inside of functions — locals, parameters, callees, referenced variables, branch conditions; matches spread along calls, references and value flow (`--hops`, default 2, or `hops:N` in the query), so the function that connects two terms scores for both. Filters: `kind:`, `in:`, `calls:`, `called-by:`, `references:`, `referenced-by:`, `reaches:`, `flows-to:`, `flows-from:`. Every hit says why. |
 | `explain <store> <symbol>` | What a symbol is and what it connects to: members, parameters, locals, callers, callees, references, flows in and out, CFG size. `func.local` and `path:name` disambiguate. |
-| `path <store> <a> <b>` | Shortest path between two symbols. |
-| `affected <store> <symbol>` | Blast radius: what breaks if this changes. |
+| `path <store> <a> <b> [--max-hops n]` | Shortest path between two symbols. |
+| `affected <store> <symbol> [--depth n]` | Blast radius: what breaks if this changes. |
 | `cfg <store> <callable>` | The stored control-flow graph, with what each block reads and writes. |
-| `diff <src> [--depth n] [--fail-on-break]` | What the uncommitted edits do, **against the last commit** when git knows the tree (against the store otherwise): symbols added, removed, re-signed, redefined or re-bound; the dependents each breaks; a trace of what each reaches through calls, references, imports, subtypes and value flow. Runs on scratch copies; the store is not modified. |
-| `audit <store> [--rules file-or-dir] [--format text\|json] [--fail-on SEVERITY]` | Taint analyses from **rule files** (YAML, Semgrep-like: `pattern-sources`, `pattern-sinks`, `pattern-sanitizers`, `pattern-not`, `paths`, `languages`, `severity`, `metadata`); `<tree>/.codegraph-rules.yaml` and `.codegraph-rules/` are read without asking, the built-in starter specs run when there are no rules (or with `--presets`). `mode: taint` (default): a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. `mode: callgraph`: a call path from a source to a sink function. `--fail-on ERROR` for CI. |
+| `diff <src> [--depth n] [--max-fanout n] [--max-impact n] [--fail-on-break]` | What the uncommitted edits do, **against the last commit** when git knows the tree (against the store otherwise): symbols added, removed, re-signed, redefined or re-bound; the dependents each breaks; a trace of what each reaches through calls, references, imports, subtypes and value flow. Runs on scratch copies; the store is not modified. |
+| `audit <store> [--rules file-or-dir] [--format text\|json] [--fail-on SEVERITY] [--max-hops n] [--context-depth n]` | Taint analyses from **rule files** (YAML, Semgrep-like: `pattern-sources`, `pattern-sinks`, `pattern-sanitizers`, `pattern-not`, `paths`, `languages`, `severity`, `metadata`); `<tree>/.codegraph-rules.yaml` and `.codegraph-rules/` are read without asking, the built-in starter specs run when there are no rules (or with `--presets`). `mode: taint` (default): a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. `mode: callgraph`: a call path from a source to a sink function. `--fail-on ERROR` for CI. |
 | `deps <store> [package]` | Which of our code reaches an external package. |
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
 | `--no-sync` (any command; or `CODEGRAPH_NO_SYNC=1`) | Answer from the store as it is, without bringing it up to date first. |
@@ -276,9 +276,11 @@ Each of these is a bound, stated so the answers can be read correctly;
 `docs/phase10-results.md` says what each one was, what it is now, and why
 the rest is fundamental.
 
-- **Across calls**: call-site matching to a stack depth of 6; deeper
+- **Across calls**: call-site matching to a stack depth of 6 by default
+  (`context-depth` in a rule, `--context-depth` on `audit`); deeper
   recursion re-admits callers. Callees the binder cannot resolve are
-  library stubs.
+  library stubs. Every search bound — hops, depth, fan-out, spread — is
+  a flag or a rule key, never only a constant.
 - **Aliasing**: a may-alias class per function — by address (`&x`) and,
   where a copy shares the object, by copy (`b = a`). Not through
   containers, not across calls, not between parameters.
