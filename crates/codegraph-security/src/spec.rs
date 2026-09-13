@@ -18,6 +18,8 @@ pub enum Matcher {
     NamePrefix(String),
     /// Name contains this.
     NameContains(String),
+    /// Name ends with this.
+    NameSuffix(String),
     /// Any symbol in a file whose path contains this.
     InPath(String),
     /// A member of a named type: `Type.method`.
@@ -33,6 +35,9 @@ impl Matcher {
     }
     pub fn contains(s: &str) -> Self {
         Self::NameContains(s.to_lowercase())
+    }
+    pub fn suffix(s: &str) -> Self {
+        Self::NameSuffix(s.to_lowercase())
     }
     pub fn in_path(s: &str) -> Self {
         Self::InPath(s.to_lowercase())
@@ -65,6 +70,18 @@ impl Matcher {
                 }
                 hits
             }
+            Matcher::NameSuffix(c) => {
+                let mut hits = Vec::new();
+                for id in engine.search(c)? {
+                    if let Some(info) = engine.info(id)?
+                        && info.name.to_lowercase().ends_with(c.as_str())
+                        && (stubs || !info.external)
+                    {
+                        hits.push(id);
+                    }
+                }
+                hits
+            }
             Matcher::InPath(p) => {
                 let mut hits = Vec::new();
                 for id in engine.search(p)? {
@@ -87,8 +104,11 @@ impl Matcher {
                 let named = if stubs { engine.by_name_with_stubs(method) } else { engine.by_name(method) };
                 for id in named {
                     for e in engine.neighbors(id, codegraph_query::Direction::In, mask)? {
+                        // A package answers to its last segment too:
+                        // `exec.Command` for the package `os/exec`.
                         if let Some(owner) = engine.info(e.id)?
-                            && owner.name.to_lowercase() == *type_name
+                            && let lower = owner.name.to_lowercase()
+                            && (lower == *type_name || lower.rsplit(['/', ':']).next() == Some(type_name.as_str()))
                         {
                             hits.push(id);
                             break;
@@ -119,6 +139,12 @@ pub struct TaintSpec {
     /// every codebase is what a spec is for. Applied to sources and sinks
     /// alike, because `request` collides just as freely.
     pub excludes: Vec<Matcher>,
+    /// When non-empty, only symbols one of these matches are sources,
+    /// sinks or sanitisers (a rule's `paths.include`).
+    pub includes: Vec<Matcher>,
+    /// When non-empty, only symbols in files of these languages (canonical
+    /// names: `python`, `go`, …); library stubs, which have no file, pass.
+    pub languages: Vec<String>,
     pub max_hops: u32,
     pub mode: Mode,
 }
@@ -147,6 +173,8 @@ impl TaintSpec {
             sinks: Vec::new(),
             sanitizers: Vec::new(),
             excludes: Vec::new(),
+            includes: Vec::new(),
+            languages: Vec::new(),
             // Long enough for a realistic call chain, short enough that a
             // pathological graph cannot make one query run forever.
             max_hops: 12,

@@ -78,3 +78,44 @@ fn a_locked_store_is_read_as_it_is() {
     assert!(out.starts_with("0 matches"), "{out}");
     assert!(err.contains("another process is updating"), "{err}");
 }
+
+#[test]
+fn audit_reads_rule_files_and_the_trees_own() {
+    let d = tempfile::tempdir().unwrap();
+    write(d.path(), "app.py", "import subprocess\n\ndef handle(request):\n    return subprocess.Popen(request)\n");
+    write(
+        d.path(),
+        ".codegraph-rules.yaml",
+        "rules:\n  - id: shell\n    message: request reaches a shell\n    severity: ERROR\n    pattern-sources: [request]\n    pattern-sinks: [subprocess.Popen]\n",
+    );
+    let tree = d.path().to_str().unwrap();
+    // The tree's own rules run instead of the starter specs.
+    let (out, _) = run(&["audit", tree, "--kind", "taint"]);
+    assert!(out.contains("shell [ERROR] — request reaches a shell"), "{out}");
+    assert!(out.contains("-> Popen"), "{out}");
+    assert!(!out.contains("command-injection"), "starter specs should not run alongside rules: {out}");
+    // JSON form.
+    let (out, _) = run(&["audit", tree, "--kind", "taint", "--format", "json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("json");
+    assert_eq!(v["worst"], "ERROR");
+    assert_eq!(v["rules"][0]["id"], "shell");
+    // --fail-on exits 1 when a finding is at or above the threshold.
+    let status = Command::new(env!("CARGO_BIN_EXE_codegraph"))
+        .args(["audit", tree, "--kind", "taint", "--fail-on", "warning"])
+        .output()
+        .unwrap()
+        .status;
+    assert_eq!(status.code(), Some(1));
+    // A rule file given explicitly, plus the starter specs on request.
+    write(d.path(), "extra.yaml", "rules:\n  - id: reach\n    mode: callgraph\n    pattern-sources: [handle]\n    pattern-sinks: [subprocess.Popen]\n");
+    let (out, _) = run(&["audit", tree, "--kind", "taint", "--rules", d.path().join("extra.yaml").to_str().unwrap(), "--presets"]);
+    assert!(out.contains("reach [WARNING]") && out.contains("shell [ERROR]") && out.contains("command-injection"), "{out}");
+    // A broken rule file is an error that names the rule.
+    write(d.path(), "bad.yaml", "rules:\n  - id: nosinks\n    pattern-sources: [x]\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_codegraph"))
+        .args(["audit", tree, "--rules", d.path().join("bad.yaml").to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("nosinks"), "{}", String::from_utf8_lossy(&out.stderr));
+}

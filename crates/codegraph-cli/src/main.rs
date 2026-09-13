@@ -152,6 +152,24 @@ enum Command {
         /// Go corpus `Exec` matches the database layer as readily as `os/exec`.
         #[arg(long = "exclude", value_name = "PATH")]
         excludes: Vec<String>,
+        /// A rule file (`.yaml`) or a directory of them, in the Semgrep-like
+        /// shape (`pattern-sources`, `pattern-sinks`, `pattern-sanitizers`,
+        /// `pattern-not`, `paths`, `languages`, `severity`, `metadata`).
+        /// Repeatable. `<tree>/.codegraph-rules.yaml` and
+        /// `<tree>/.codegraph-rules/` are read without asking. When any rule
+        /// is loaded the starter specs are not run unless `--presets`.
+        #[arg(long = "rules", value_name = "FILE-OR-DIR")]
+        rules: Vec<PathBuf>,
+        /// Run the built-in starter specs as well as the rules.
+        #[arg(long)]
+        presets: bool,
+        /// Output form.
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Exit 1 when any finding has this severity or worse (ERROR,
+        /// WARNING, INFO), for CI.
+        #[arg(long, value_name = "SEVERITY")]
+        fail_on: Option<String>,
     },
     /// Which of our code reaches a package.
     Deps {
@@ -175,6 +193,12 @@ enum AuditKind {
     All,
     Taint,
     Entrypoints,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -205,7 +229,9 @@ fn main() -> Result<()> {
         Command::Affected { store, symbol, depth, limit } => {
             cmd_affected(&store, &symbol, depth, limit)
         }
-        Command::Audit { store, kind, mode, limit, excludes } => cmd_audit(&store, kind, mode, limit, &excludes),
+        Command::Audit { store, kind, mode, limit, excludes, rules, presets, format, fail_on } => {
+            cmd_audit(&store, kind, mode, limit, &excludes, &rules, presets, format, fail_on.as_deref())
+        }
         Command::Cfg { store, symbol } => cmd_cfg(&store, &symbol),
         Command::Diff { source, repo, depth, limit, fail_on_break } => {
             cmd_diff(&source, &repo, depth, limit, fail_on_break)
@@ -884,11 +910,28 @@ fn cmd_cfg(store: &Path, symbol: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_audit(store: &Path, kind: AuditKind, mode: AuditMode, limit: usize, excludes: &[String]) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn cmd_audit(
+    store: &Path,
+    kind: AuditKind,
+    mode: AuditMode,
+    limit: usize,
+    excludes: &[String],
+    rule_paths: &[PathBuf],
+    presets_too: bool,
+    format: OutputFormat,
+    fail_on: Option<&str>,
+) -> Result<()> {
+    use codegraph_security::{RuleSpec, Severity, load_rules, render_json, render_text, run_rules, tree_rule_paths, worst};
+    let fail_on = match fail_on {
+        Some(s) => Some(Severity::parse(s).ok_or_else(|| anyhow::anyhow!("--fail-on {s:?}: use ERROR, WARNING or INFO"))?),
+        None => None,
+    };
     let e = open(store)?;
     let sec = Security::new(&e);
+    let text = format == OutputFormat::Text;
 
-    if matches!(kind, AuditKind::All | AuditKind::Entrypoints) {
+    if text && matches!(kind, AuditKind::All | AuditKind::Entrypoints) {
         let eps = sec.entrypoints()?;
         let live = sec.reachable_from_entrypoints()?;
         println!(
@@ -899,67 +942,65 @@ fn cmd_audit(store: &Path, kind: AuditKind, mode: AuditMode, limit: usize, exclu
             live.len() as f64 / e.symbol_count().max(1) as f64 * 100.0
         );
     }
+    if !matches!(kind, AuditKind::All | AuditKind::Taint) {
+        return Ok(());
+    }
 
-    if matches!(kind, AuditKind::All | AuditKind::Taint) {
-        if mode == AuditMode::Dataflow {
+    // The rules: those named, plus the tree's own, plus the starter specs
+    // when nothing else was given (or asked for).
+    let mut paths: Vec<PathBuf> = rule_paths.to_vec();
+    if let Some(root) = codegraph_resolve::TreeState::load(&codegraph_resolve::locate(store)?.store_dir).map(|t| t.root_path()) {
+        paths.extend(tree_rule_paths(&root));
+    }
+    let mut rules: Vec<RuleSpec> = Vec::new();
+    let mut loaded_files = 0usize;
+    for p in &paths {
+        let loaded = load_rules(p).map_err(|e| anyhow::anyhow!("{e}"))?;
+        loaded_files += 1;
+        for r in &loaded {
+            rules.push(RuleSpec::from_rule(r).map_err(|m| anyhow::anyhow!("{}: rule {:?}: {m}", p.display(), r.id))?);
+        }
+    }
+    let spec_mode = match mode {
+        AuditMode::Callgraph => codegraph_security::Mode::CallGraph,
+        AuditMode::Dataflow => codegraph_security::Mode::DataFlow,
+    };
+    let using_presets = rules.is_empty() || presets_too;
+    if using_presets {
+        rules.extend(presets::all().into_iter().map(|s| RuleSpec::from_preset(s, spec_mode)));
+    }
+    for r in &mut rules {
+        for p in excludes {
+            r.spec.excludes.push(codegraph_security::Matcher::in_path(p));
+        }
+    }
+
+    if text {
+        if loaded_files > 0 {
+            println!("rules: {} from {} file(s){}", rules.iter().filter(|r| r.from_file).count(), loaded_files, if using_presets { " + starter specs" } else { "" });
+        }
+        if rules.iter().any(|r| r.spec.mode == codegraph_security::Mode::DataFlow) {
             println!(
-                "\nmode: dataflow — a finding is a value from a source reaching a sink's \
-                 argument. Flow-, field- and predicate-sensitive within a function, \
-                 call-site-matched across calls (a value leaves a callee where it \
-                 entered), may-alias by copy and address; library calls by summary."
+                "taint: a finding is a value from a source reaching a sink's argument. Flow-, field- and \
+                 predicate-sensitive within a function, call-site-matched across calls (a value leaves a \
+                 callee where it entered), may-alias by copy and address; library calls by summary."
             );
         }
-        for spec in presets::all() {
-            let spec = excludes
-                .iter()
-                .fold(spec, |s, p| s.exclude(codegraph_security::Matcher::in_path(p)));
-            let spec = match mode {
-                AuditMode::Callgraph => spec,
-                AuditMode::Dataflow => spec.mode(codegraph_security::Mode::DataFlow),
-            };
-            let t = Instant::now();
-            let a = sec.analyse(&spec, limit)?;
-            match mode {
-                AuditMode::Callgraph => println!(
-                    "\n{}: {} sources x {} sinks, {:.1}% rejected by index, {} findings ({:.0} ms)",
-                    spec.name,
-                    a.sources,
-                    a.sinks,
-                    a.rejection_rate() * 100.0,
-                    a.findings.len(),
-                    t.elapsed().as_secs_f64() * 1e3
-                ),
-                // Value flow is searched backwards from each sink; the
-                // reachability labels do not cover it.
-                AuditMode::Dataflow => println!(
-                    "\n{}: {} sources x {} sinks, {} sinks searched, {} findings ({:.0} ms)",
-                    spec.name,
-                    a.sources,
-                    a.sinks,
-                    a.pairs_searched,
-                    a.findings.len(),
-                    t.elapsed().as_secs_f64() * 1e3
-                ),
-            }
-            for f in &a.findings {
-                println!(
-                    "  {} -> {}  [{} hops, {:?}{}]",
-                    show_in_context(&e, &f.source),
-                    show_in_context(&e, &f.sink),
-                    f.depth(),
-                    f.confidence,
-                    if f.reachable_from_entrypoint { ", live" } else { ", unreachable" }
-                );
-                let via: Vec<String> = f.path.iter().map(|s| s.name.clone()).collect();
-                println!("      via {}", via.join(" -> "));
+    }
+    let results = run_rules(&sec, &rules, limit);
+    match format {
+        OutputFormat::Text => {
+            print!("{}", render_text(&results, &|s| show_in_context(&e, s)));
+            if using_presets {
+                println!("\nnote: the starter specs are a starting point, not a policy. Zero findings means zero matches for *these* patterns; write your own in a rule file (--rules).");
             }
         }
-        // These presets are a starting point, and saying so beats letting an
-        // empty result read as "no vulnerabilities".
-        println!(
-            "\nnote: these are starter specs, not a policy. Zero findings means \
-             zero matches for *these* patterns."
-        );
+        OutputFormat::Json => println!("{}", render_json(&results)),
+    }
+    if let (Some(threshold), Some(w)) = (fail_on, worst(&results))
+        && w >= threshold
+    {
+        std::process::exit(1);
     }
     Ok(())
 }

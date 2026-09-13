@@ -167,6 +167,13 @@ pub struct AuditArgs {
     /// and address.
     #[serde(default = "callgraph")]
     pub mode: String,
+    /// A rule file or directory (Semgrep-like YAML: `pattern-sources`,
+    /// `pattern-sinks`, `pattern-sanitizers`, `pattern-not`, `paths`,
+    /// `languages`, `severity`). The tree's own `.codegraph-rules.yaml`
+    /// and `.codegraph-rules/` are read without asking. When any rule is
+    /// loaded the starter specs are not run.
+    #[serde(default)]
+    pub rules: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -561,6 +568,7 @@ impl CodeGraph {
     /// vulnerabilities.
     #[tool(name = "audit")]
     async fn audit(&self, Parameters(a): Parameters<AuditArgs>) -> String {
+        use codegraph_security::{RuleSpec, load_rules, render_text, run_rules, tree_rule_paths};
         let e = self.engine();
         let sec = Security::new(&e);
         let mut out = String::new();
@@ -573,50 +581,52 @@ impl CodeGraph {
             )),
             _ => out.push_str("entrypoint analysis unavailable\n"),
         }
+        let mut paths: Vec<std::path::PathBuf> = Vec::new();
+        if !a.rules.trim().is_empty() {
+            paths.push(std::path::PathBuf::from(a.rules.trim()));
+        }
+        if let Some(root) = codegraph_resolve::TreeState::load(e.store().root()).map(|t| t.root_path()) {
+            paths.extend(tree_rule_paths(&root));
+        }
+        let mut rules: Vec<RuleSpec> = Vec::new();
+        for p in &paths {
+            match load_rules(p) {
+                Ok(loaded) => {
+                    for r in &loaded {
+                        match RuleSpec::from_rule(r) {
+                            Ok(rs) => rules.push(rs),
+                            Err(m) => return format!("{}: rule {:?}: {m}", p.display(), r.id),
+                        }
+                    }
+                }
+                Err(err) => return format!("could not load rules: {err}"),
+            }
+        }
         let dataflow = a.mode.eq_ignore_ascii_case("dataflow");
-        if dataflow {
+        let using_presets = rules.is_empty();
+        if using_presets {
+            let mode = if dataflow { codegraph_security::Mode::DataFlow } else { codegraph_security::Mode::CallGraph };
+            rules.extend(presets::all().into_iter().map(|s| RuleSpec::from_preset(s, mode)));
+        } else {
+            out.push_str(&format!("rules: {} from {}\n", rules.len(), paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")));
+        }
+        if rules.iter().any(|r| r.spec.mode == codegraph_security::Mode::DataFlow) {
             out.push_str(
-                "mode: dataflow. A finding is a value from a source reaching a sink's argument: \
+                "taint: a finding is a value from a source reaching a sink's argument: \
                  flow-, field- and predicate-sensitive within a function, call-site-matched \
                  across calls, may-alias by copy and address, library calls by summary. \
                  Missing edges (unresolved calls, reflection) mean missing findings.\n",
             );
         }
-        for spec in presets::all() {
-            let spec = if dataflow { spec.mode(codegraph_security::Mode::DataFlow) } else { spec };
-            match sec.analyse(&spec, a.limit) {
-                Ok(an) => {
-                    out.push_str(&format!(
-                        "\n{}: {} sources x {} sinks, {:.1}% ruled out by the reachability \
-                         index, {} findings\n",
-                        spec.name,
-                        an.sources,
-                        an.sinks,
-                        an.rejection_rate() * 100.0,
-                        an.findings.len()
-                    ));
-                    for f in &an.findings {
-                        out.push_str(&format!(
-                            "  {} -> {} [{} hops, {:?}{}]\n",
-                            describe(&f.source),
-                            describe(&f.sink),
-                            f.depth(),
-                            f.confidence,
-                            if f.reachable_from_entrypoint { ", live" } else { ", unreachable" }
-                        ));
-                        if dataflow {
-                            let via: Vec<String> = f.path.iter().map(|s| s.name.clone()).collect();
-                            out.push_str(&format!("    via {}\n", via.join(" -> ")));
-                        }
-                    }
-                }
-                Err(err) => out.push_str(&format!("\n{}: failed: {err}\n", spec.name)),
-            }
+        let results = run_rules(&sec, &rules, a.limit);
+        out.push_str(&render_text(&results, &|s| describe(s)));
+        if using_presets {
+            out.push_str(
+                "\nnote: these are starter specs, not a policy. Zero findings means zero matches \
+                 for these patterns; write your own in a rule file (the `rules` argument, or \
+                 `.codegraph-rules.yaml` in the tree).\n",
+            );
         }
-        out.push_str(
-            "\nnote: these are starter specs, not a policy. Zero findings means zero matches \
-             for these patterns.\n",
-        );
         out
     }
 

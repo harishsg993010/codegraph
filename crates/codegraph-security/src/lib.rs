@@ -29,6 +29,8 @@
 //! genuinely cannot be called from that source. That is what makes it useful
 //! for triage — ruling vulnerabilities *out* is where the leverage is.
 
+pub mod report;
+pub mod rules;
 pub mod spec;
 
 use codegraph_core::{LocalId, Relation, RelationMask};
@@ -36,6 +38,8 @@ use codegraph_index::IndexQuery;
 use codegraph_query::{Engine, SymbolInfo};
 use codegraph_store::Result;
 
+pub use report::{RuleResult, RuleSpec, render_json, render_text, run_rules, worst};
+pub use rules::{Rule, RuleError, Severity, load_rules, parse_rules, tree_rule_paths};
 pub use spec::{Matcher, Mode, TaintSpec};
 
 /// How much a finding is worth acting on.
@@ -302,14 +306,69 @@ impl<'a, I: IndexQuery> Security<'a, I> {
         // chain dressed up as a call path.
         let dataflow = spec.mode == Mode::DataFlow;
         let mask = if dataflow { DATA_FLOW } else { FLOW };
-        let excluded: std::collections::HashSet<u32> =
-            self.resolve_all(&spec.excludes, dataflow)?.iter().map(|l| l.get()).collect();
-        let keep = |ids: Vec<LocalId>| -> Vec<LocalId> {
-            ids.into_iter().filter(|l| !excluded.contains(&l.get())).collect()
+        // Path excludes are tests on the symbol's file (so a parameter,
+        // which no name index holds, is judged like its owner); the other
+        // excludes are resolved to symbols.
+        let exclude_paths: Vec<&str> = spec
+            .excludes
+            .iter()
+            .filter_map(|m| if let Matcher::InPath(p) = m { Some(p.as_str()) } else { None })
+            .collect();
+        let excluded: std::collections::HashSet<u32> = {
+            let rest: Vec<Matcher> = spec.excludes.iter().filter(|m| !matches!(m, Matcher::InPath(_))).cloned().collect();
+            self.resolve_all(&rest, dataflow)?.iter().map(|l| l.get()).collect()
         };
-        let mut sources = keep(self.executable(self.resolve_all(&spec.sources, dataflow)?)?);
-        let mut sinks = keep(self.executable(self.resolve_all(&spec.sinks, dataflow)?)?);
+        // Path includes and languages are tests on the symbol's file, so a
+        // parameter (which no name index holds) is judged like its owner.
+        // A library stub is judged by the file that first mentioned it —
+        // `subprocess.Popen` is Python's because a Python file called it —
+        // and a stub with no file at all passes.
+        let include_paths: Vec<&str> = spec
+            .includes
+            .iter()
+            .filter_map(|m| if let Matcher::InPath(p) = m { Some(p.as_str()) } else { None })
+            .collect();
+        let included: std::collections::HashSet<u32> = {
+            let rest: Vec<Matcher> = spec.includes.iter().filter(|m| !matches!(m, Matcher::InPath(_))).cloned().collect();
+            self.resolve_all(&rest, dataflow)?.iter().map(|l| l.get()).collect()
+        };
+        let keep = |ids: Vec<LocalId>| -> Result<Vec<LocalId>> {
+            let mut out = Vec::with_capacity(ids.len());
+            for id in ids {
+                if excluded.contains(&id.get()) {
+                    continue;
+                }
+                if !exclude_paths.is_empty() || !spec.includes.is_empty() || !spec.languages.is_empty() {
+                    let Some(info) = self.engine.info(id)? else { continue };
+                    let path = info.path.to_lowercase();
+                    let in_files = path.is_empty();
+                    if !in_files && exclude_paths.iter().any(|p| path.contains(p)) {
+                        continue;
+                    }
+                    if !spec.includes.is_empty()
+                        && !in_files
+                        && !include_paths.iter().any(|p| path.contains(p))
+                        && !included.contains(&id.get())
+                    {
+                        continue;
+                    }
+                    if !in_files && !crate::rules::path_in_languages(&path, &spec.languages) {
+                        continue;
+                    }
+                }
+                out.push(id);
+            }
+            Ok(out)
+        };
+        let mut sources = keep(self.executable(self.resolve_all(&spec.sources, dataflow)?)?)?;
+        // A sink is usually a library call, and a call to one is an edge
+        // now, so a stub answers the call-graph question too.
+        let mut sinks = keep(self.executable(self.resolve_all(&spec.sinks, true)?)?)?;
         if dataflow {
+            // A value question may name a *parameter* as its source —
+            // `request`, `handle.request` — which the name index does not
+            // hold: parameters are found by a scan, once per spec.
+            sources.extend(keep(self.parameters_matching(&spec.sources)?)?);
             // A value question starts at what a source *produces* — its
             // return value (the function symbol) and its inputs — and ends
             // at what a sink *consumes*: its parameters, or the external
@@ -317,7 +376,7 @@ impl<'a, I: IndexQuery> Security<'a, I> {
             sources = self.with_parameters(sources)?;
             sinks = self.with_parameters(sinks)?;
         }
-        let sanitizers = self.resolve_all(&spec.sanitizers, dataflow)?;
+        let sanitizers = keep(self.resolve_all(&spec.sanitizers, dataflow)?)?;
 
         let live = self.reachable_from_entrypoints()?;
         let live_set: std::collections::HashSet<u32> = live.iter().map(|l| l.get()).collect();
@@ -435,6 +494,39 @@ impl<'a, I: IndexQuery> Security<'a, I> {
             if let Some(info) = self.engine.info(id)?
                 && can_carry_taint(info.kind)
             {
+                out.push(id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Parameters a name-style matcher names: exact, prefix, suffix,
+    /// contains, or `function.param` as a member.
+    fn parameters_matching(&self, matchers: &[Matcher]) -> Result<Vec<LocalId>> {
+        let wanted: Vec<&Matcher> = matchers.iter().filter(|m| !matches!(m, Matcher::InPath(_))).collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let view = self.engine.store().view();
+        let own = RelationMask::of(&[Relation::Contains]);
+        let mut out = Vec::new();
+        for id in view.ids() {
+            if view.kind_raw(id)? != codegraph_core::SymbolKind::Parameter.as_u8() {
+                continue;
+            }
+            let name = view.name(id)?.to_lowercase();
+            let hit = wanted.iter().any(|m| match m {
+                Matcher::Name(n) => name == *n,
+                Matcher::NamePrefix(p) => name.starts_with(p.as_str()),
+                Matcher::NameSuffix(p) => name.ends_with(p.as_str()),
+                Matcher::NameContains(c) => name.contains(c.as_str()),
+                Matcher::Member { type_name, method } => {
+                    name == *method
+                        && view.in_edges(id, own).ok().into_iter().flatten().any(|e| view.name(e.node).is_ok_and(|o| o.to_lowercase() == *type_name))
+                }
+                Matcher::InPath(_) => false,
+            });
+            if hit {
                 out.push(id);
             }
         }

@@ -1,0 +1,144 @@
+# Starter rules for `codegraph audit --rules rules/starter.yaml`.
+#
+# A starting point, not a policy: every codebase names its own sources and
+# sinks. Copy this to `<tree>/.codegraph-rules.yaml` (read without asking)
+# and edit.
+#
+# A `pattern` names a symbol, not code — the graph is already the parse:
+#   Name        exact name            Name*      prefix
+#   *Name       suffix                *Name*     contains
+#   Owner.Name  a member of a type or package (`os/exec` answers to `exec`)
+# Long forms: name:, prefix:, suffix:, contains:, member: [Owner, Name],
+# path: (every symbol in files whose path contains it). Names fold case.
+#
+# In `taint` mode (the default) a source is what *produces* an untrusted
+# value: a function (its return) or a parameter (`request`, `handle.req`);
+# a sink is what consumes it: a function or library call (its arguments).
+# Library calls are transparent by summary — `r.FormValue(k)` yields `r`'s
+# data — so the source of a Go handler's input is its request parameter.
+
+rules:
+  - id: python-command-injection
+    message: Request data reaches a shell or an eval
+    severity: ERROR
+    languages: [python]
+    metadata: { cwe: CWE-78 }
+    pattern-sources:
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: argv
+      - pattern: input
+    pattern-sinks:
+      - pattern: subprocess.Popen
+      - pattern: subprocess.run
+      - pattern: subprocess.call
+      - pattern: subprocess.check_output
+      - pattern: os.system
+      - pattern: os.popen
+      - pattern: eval
+      - pattern: exec
+    pattern-sanitizers:
+      - pattern: shlex.quote
+      - pattern: shlex.split
+
+  - id: python-sql-injection
+    message: Request data reaches a SQL execution call
+    severity: ERROR
+    languages: [python]
+    metadata: { cwe: CWE-89 }
+    pattern-sources:
+      - pattern: request
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: execute
+      - pattern: executemany
+      - pattern: "*raw_query*"
+      - pattern: text                # sqlalchemy.text
+    pattern-sanitizers:
+      - pattern: "*escape*"
+
+  - id: python-path-traversal
+    message: Request data reaches a file open
+    severity: WARNING
+    languages: [python]
+    metadata: { cwe: CWE-22 }
+    pattern-sources:
+      - pattern: request
+      - pattern: "*request*"
+      - pattern: "*upload*"
+    pattern-sinks:
+      - pattern: open
+      - pattern: send_file
+      - pattern: send_from_directory
+    pattern-sanitizers:
+      - pattern: os.path.realpath
+      - pattern: os.path.normpath
+      - pattern: secure_filename
+
+  - id: go-command-injection
+    message: A request value reaches a shell command
+    severity: ERROR
+    languages: [go]
+    metadata: { cwe: CWE-78 }
+    paths:
+      exclude: [_test.go, tests/integration/]
+    pattern-sources:
+      - pattern: r                   # the *http.Request parameter by convention
+      - pattern: req
+      - pattern: "*Request*"
+    pattern-sinks:
+      - pattern: exec.Command
+      - pattern: exec.CommandContext
+      - pattern: syscall.Exec
+    pattern-sanitizers:
+      - pattern: shellescape.Quote
+
+  - id: go-path-traversal
+    message: A request value reaches a file open
+    severity: WARNING
+    languages: [go]
+    metadata: { cwe: CWE-22 }
+    paths:
+      exclude: [_test.go, tests/integration/]
+    pattern-sources:
+      - pattern: r
+      - pattern: req
+      - pattern: "*Request*"
+    pattern-sinks:
+      - pattern: os.Open
+      - pattern: os.OpenFile
+      - pattern: os.ReadFile
+      - pattern: os.Create
+      - pattern: os.Remove
+      - pattern: os.RemoveAll
+    pattern-sanitizers:
+      - pattern: filepath.Clean
+      - pattern: filepath.Base
+      - pattern: "*SanitizePath*"
+
+  - id: javascript-command-injection
+    message: Request data reaches a child process
+    severity: ERROR
+    languages: [javascript, typescript, tsx]
+    metadata: { cwe: CWE-78 }
+    pattern-sources:
+      - pattern: req
+      - pattern: request
+      - pattern: "*request*"
+    pattern-sinks:
+      - pattern: child_process.exec
+      - pattern: child_process.execSync
+      - pattern: child_process.spawn
+      - pattern: eval
+
+  - id: java-command-injection
+    message: Request data reaches Runtime.exec or ProcessBuilder
+    severity: ERROR
+    languages: [java]
+    metadata: { cwe: CWE-78 }
+    pattern-sources:
+      - pattern: request
+      - pattern: "*Request*"
+    pattern-sinks:
+      - pattern: Runtime.exec
+      - pattern: ProcessBuilder

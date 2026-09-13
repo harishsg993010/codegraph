@@ -115,6 +115,37 @@ current as files change, so the next query has nothing to do; and
 serving each new generation without a restart, so a model editing the
 tree asks questions of the tree as it is.
 
+## Security rules
+
+Taint questions are written in YAML, in the shape Semgrep users know, and
+answered by the value-flow engine rather than by matching text:
+
+```yaml
+# .codegraph-rules.yaml — read by every `audit` of this tree
+rules:
+  - id: go-command-injection
+    message: A request value reaches a shell command
+    severity: ERROR
+    languages: [go]
+    metadata: { cwe: CWE-78 }
+    paths: { exclude: [_test.go] }
+    pattern-sources:
+      - pattern: r                 # the *http.Request parameter, by convention
+      - pattern: "*Request*"
+    pattern-sinks:
+      - pattern: exec.Command      # the member `Command` of the package `os/exec`
+      - pattern: exec.CommandContext
+    pattern-sanitizers:
+      - pattern: shellescape.Quote
+```
+
+A `pattern` names a symbol: `Name`, `Name*`, `*Name`, `*Name*`,
+`Owner.Name`; a source is a function (its return) or a parameter, a sink
+a function or library call (its arguments). `codegraph audit ./repo`
+reports per rule with severity and message; `--format json` for tooling,
+`--fail-on ERROR` for CI. `rules/starter.yaml` is a starting point to
+copy; `docs/phase13-results.md` says what a rule can and cannot express.
+
 ## What is in the graph
 
 **Symbols.** Files, packages, types, functions and methods, **parameters**,
@@ -171,7 +202,7 @@ indexed on first use and synced before every answer.
 | `affected <store> <symbol>` | Blast radius: what breaks if this changes. |
 | `cfg <store> <callable>` | The stored control-flow graph, with what each block reads and writes. |
 | `diff <src> [--depth n] [--fail-on-break]` | What the uncommitted edits do, **against the last commit** when git knows the tree (against the store otherwise): symbols added, removed, re-signed, redefined or re-bound; the dependents each breaks; a trace of what each reaches through calls, references, imports, subtypes and value flow. Runs on scratch copies; the store is not modified. |
-| `audit <store> [--mode callgraph\|dataflow]` | Taint analyses from starter specs (command injection, SQL injection, path traversal). Call-graph mode: a call path from a source to a sink function. Dataflow mode: a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. |
+| `audit <store> [--rules file-or-dir] [--format text\|json] [--fail-on SEVERITY]` | Taint analyses from **rule files** (YAML, Semgrep-like: `pattern-sources`, `pattern-sinks`, `pattern-sanitizers`, `pattern-not`, `paths`, `languages`, `severity`, `metadata`); `<tree>/.codegraph-rules.yaml` and `.codegraph-rules/` are read without asking, the built-in starter specs run when there are no rules (or with `--presets`). `mode: taint` (default): a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. `mode: callgraph`: a call path from a source to a sink function. `--fail-on ERROR` for CI. |
 | `deps <store> [package]` | Which of our code reaches an external package. |
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
 | `--no-sync` (any command; or `CODEGRAPH_NO_SYNC=1`) | Answer from the store as it is, without bringing it up to date first. |
@@ -232,6 +263,7 @@ files), the bugs each phase surfaced, and the limits stated plainly:
 - `docs/phase12-results.md` — index on first use and sync before every
   answer; change detection through git; `.codegraphignore`; `watch`; the
   server following the tree; the store lock.
+- `docs/phase13-results.md` — rule files: taint questions in YAML.
 
 ## Limits
 
@@ -256,9 +288,11 @@ the rest is fundamental.
   (everything may reach everything).
 - **Locals** are one stored row per name; the `local_flow` edges carry
   the definition lines, so `explain` is flow-sensitive without more rows.
-- **Sinks by name**: the starter specs match `Exec`, `Open` by name; a
-  database `Exec` and a shell `Exec` are one sink until a spec qualifies
-  them.
+- **Sources and sinks by name**: a rule names symbols, not types — every
+  `*http.Request` is `r`, `req`, `*Request*` by convention, and a shell
+  `Exec` and a database `Exec` are one sink until a rule qualifies them
+  (`exec.Command`, `pattern-not`). A rule has no metavariables, no
+  `pattern-inside`, no text patterns.
 - **Git** accelerates change detection; it does not decide what is
   indexed — `.gitignore` and `.codegraphignore` do, git or no git. Any
   doubt (no record, a rewritten commit, an ignore file changed) falls
