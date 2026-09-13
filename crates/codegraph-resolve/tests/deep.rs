@@ -147,8 +147,9 @@ fn a_parameter_is_found_by_name_and_credits_its_function() {
     let hits = run(&e, "request kind:parameter");
     assert_eq!(names(&hits), ["request"]);
     assert_eq!(hits[0].info.kind, SymbolKind::Parameter);
-    // Plain search still leaves parameters out; the qualified form finds one.
-    assert!(e.search("request").unwrap().iter().all(|id| !e.is_parameter(*id)));
+    // Plain search lists parameters too; the qualified form names one.
+    assert!(e.search("request").unwrap().iter().any(|id| e.is_parameter(*id)));
+    assert!(e.search_with("request", false).unwrap().iter().all(|id| !e.is_parameter(*id)));
     let q = e.by_qualified_name("handle_upload.request");
     assert_eq!(q.len(), 1);
     assert!(e.is_parameter(q[0]));

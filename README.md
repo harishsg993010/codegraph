@@ -200,7 +200,7 @@ indexed on first use and synced before every answer.
 |---|---|
 | `index <src> [--full]` | Build `<src>/.codegraph` explicitly — the other commands do this on first use and keep it current after. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. Changed files are found through git when git is there, by a walk otherwise. A one-line edit on a 3,300-file tree is 0.7 s; a full index is 16–20 s. |
 | `watch <src> [--debounce-ms n]` | Index, then keep the store current: re-index what changes after each quiet period, one line per round. |
-| `search <store> <query>` | Symbols by name, prefix, substring or path. |
+| `search <store> <query>` | Symbols by name, prefix, substring or path — parameters included, shown with their owner. |
 | `deep <store> <terms and filters> [--hops n] [--seeds n]` | **Deep search**: find code by what it is connected to. Terms match names and paths by subword, and the inside of functions — locals, parameters, callees, referenced variables, branch conditions; matches spread along calls, references and value flow (`--hops`, default 2, or `hops:N` in the query), so the function that connects two terms scores for both. Filters: `kind:`, `in:`, `calls:`, `called-by:`, `references:`, `referenced-by:`, `reaches:`, `flows-to:`, `flows-from:`. Every hit says why. |
 | `explain <store> <symbol>` | What a symbol is and what it connects to: members, parameters, locals, callers, callees, references, flows in and out, CFG size. `func.local` and `path:name` disambiguate. |
 | `path <store> <a> <b> [--max-hops n]` | Shortest path between two symbols. |

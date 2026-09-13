@@ -61,7 +61,7 @@ impl Matcher {
                 // `search` also matches on path; narrow to name matches so a
                 // sink called `exec` does not pull in every file under `exec/`.
                 let mut hits = Vec::new();
-                for id in engine.search(c)? {
+                for id in engine.search_with(c, false)? {
                     if let Some(info) = engine.info(id)?
                         && info.name.to_lowercase().contains(c)
                     {
@@ -72,7 +72,7 @@ impl Matcher {
             }
             Matcher::NameSuffix(c) => {
                 let mut hits = Vec::new();
-                for id in engine.search(c)? {
+                for id in engine.search_with(c, false)? {
                     if let Some(info) = engine.info(id)?
                         && info.name.to_lowercase().ends_with(c.as_str())
                         && (stubs || !info.external)
@@ -84,7 +84,7 @@ impl Matcher {
             }
             Matcher::InPath(p) => {
                 let mut hits = Vec::new();
-                for id in engine.search(p)? {
+                for id in engine.search_with(p, false)? {
                     if let Some(info) = engine.info(id)?
                         && info.path.to_lowercase().contains(p)
                     {

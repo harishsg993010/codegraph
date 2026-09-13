@@ -660,7 +660,7 @@ fn cmd_search(store: &Path, query: &str, limit: usize) -> Result<()> {
     println!("{} matches", hits.len());
     for id in hits.iter().take(limit) {
         if let Some(i) = e.info(*id)? {
-            println!("  {:<8} {}", format!("[{}]", i.kind), show(&i));
+            println!("  {:<8} {}", format!("[{}]", i.kind), show_in_context(&e, &i));
         }
     }
     if hits.len() > limit {

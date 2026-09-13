@@ -98,10 +98,11 @@ names). The same principle holds elsewhere: `deep` takes `--hops`,
 **Parameters are in the name index** (index format 3; an older index is
 rebuilt on open). `deep request` credits every function with a parameter
 so called and returns the parameters themselves under `kind:parameter`;
-`explain handle.request` resolves the qualified form. Plain `search` and
-the bare-name lookups still leave parameters out — thirty thousand
-`ctx`s are one callable's business each — so `search request` answers as
-before.
+`explain handle.request` resolves the qualified form, and `search
+request` lists parameters among its matches, each shown with its owner
+(`Verify(req)`). Only the exact-name lookups that resolve a symbol to a
+definition (`explain request`, `path`, `affected`) leave parameters out;
+the qualified form names one.
 
 What a rule cannot say, because the analysis does not do it: a pattern
 over the text of an expression (`$X = request.args[...]`), a

@@ -318,10 +318,14 @@ impl<I: IndexQuery> Engine<I> {
     /// produce a trigram falls back to a full scan rather than returning
     /// nothing.
     pub fn search(&self, needle: &str) -> Result<Vec<LocalId>> {
-        self.search_with(needle, false)
+        self.search_with(needle, true)
     }
 
-    /// [`Self::search`], with parameters among the results when asked.
+    /// [`Self::search`], with parameters among the results or not. The
+    /// exact-name lookups (`by_name`, `by_prefix`) leave parameters out so
+    /// a symbol name resolves to a definition; a substring search is a
+    /// listing, and a parameter is as much an answer to "what is called
+    /// `request`" as anything.
     pub fn search_with(&self, needle: &str, parameters: bool) -> Result<Vec<LocalId>> {
         let view = self.view();
         let needle = needle.to_lowercase();
