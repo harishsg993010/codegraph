@@ -41,7 +41,7 @@ rules: 7 from 1 file(s)
 taint: a finding is a value from a source reaching a sink's argument. ...
 
 go-command-injection [ERROR] — A request value reaches a shell command
-  1845 sources x 1 sinks, 1 sinks searched, 4 finding(s) (202 ms)
+  1845 sources x 1 sinks, 1 sinks searched, 191 finding(s) (120 ms)
   requestJSONResp (external) -> CommandContext (external)  [3 hops, Inferred, unreachable]
       via requestJSONResp -> resp -> ... -> CommandContext
   ...
@@ -108,6 +108,14 @@ JSON; the CLI and the MCP `audit` tool (new `rules` argument) share it.
 Two matcher fixes fell out: `Member` accepts a package's last segment as
 the owner (`exec.Command` for `os/exec`), and call-graph sinks admit
 library stubs.
+
+## Numbers — Gitea
+
+| | |
+|---|---|
+| `rules/starter.yaml`, 7 rules | Go: command injection 191 findings (sources `r`, `req`, `*Request*`; 1 sink, `exec.CommandContext`), path traversal 43 (5 sinks); the Python, JavaScript and Java rules 0 sources or 0 sinks, as they should on a Go corpus |
+| each rule | 20–120 ms after the store is open |
+| starter specs (`--presets`, taint mode, field-test excludes) | 361 / 7 / 46 — up from 20 / 7 / 20 in Phase 11 because a source pattern now also names **parameters** (`*request*` matches every `request` parameter), which is what a taint question means by a source |
 
 ## Limits, stated
 

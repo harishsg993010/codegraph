@@ -61,10 +61,15 @@ $ codegraph diff ./gitea          # after adding a parameter in modules/util/tru
 summary: 1 change(s), 1 breaking, 266 symbol(s) affected
 (5.7 s)
 
-$ codegraph audit ./gitea --mode dataflow --exclude _test.go --exclude tests/integration/
-command-injection: 1377 sources x 60 sinks, 48 sinks searched, 20 findings (239 ms)
-sql-injection:     1508 sources x 14 sinks, 14 sinks searched, 7 findings (83 ms)
-path-traversal:    1738 sources x 86 sinks, 58 sinks searched, 20 findings (145 ms)
+$ codegraph audit ./gitea --kind taint         # rules from ./gitea/.codegraph-rules.yaml
+go-command-injection [ERROR] — A request value reaches a shell command
+  1845 sources x 1 sinks, 1 sinks searched, 191 finding(s) (120 ms)
+  requestJSONResp (external) -> CommandContext (external)  [3 hops, Inferred, unreachable]
+      via requestJSONResp -> resp -> ... -> CommandContext
+  ...
+go-path-traversal [WARNING] — A request value reaches a file open
+  1845 sources x 5 sinks, 5 sinks searched, 43 finding(s) (115 ms)
+  ...
 ```
 
 Gitea is 3,342 Go/JS/TS files. The first command indexes it in 16–20 s;
