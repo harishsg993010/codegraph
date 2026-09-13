@@ -12,7 +12,7 @@
 //! particular state their limits inline: an agent that reads "0 findings" as
 //! "no vulnerabilities" has been misled by the tool, not by the codebase.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use codegraph_core::{LocalId, Relation, RelationMask};
 use codegraph_index::{IndexQuery, Layered, MappedIndex};
@@ -31,19 +31,38 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+/// Open a store and whatever index it needs for serving.
+///
+/// A missing or stale index is recoverable, so build what is missing
+/// rather than refuse — but say so, because a full rebuild is slow and the
+/// operator should know why startup took a while.
+pub fn open_store(dir: &std::path::Path) -> anyhow::Result<Engine<Index>> {
+    use anyhow::Context;
+    let store = codegraph_store::Store::open(dir).with_context(|| format!("opening store at {}", dir.display()))?;
+    let (index, how) = codegraph_index::open_or_build(&store, dir)?;
+    match how {
+        codegraph_index::Opened::Base | codegraph_index::Opened::Overlaid => {}
+        codegraph_index::Opened::OverlayBuilt => eprintln!("index overlay was missing; built it"),
+        codegraph_index::Opened::Rebuilt => eprintln!("index unusable; rebuilt"),
+    }
+    Ok(Engine::from_parts(store, index))
+}
+
 /// A store served over MCP.
 #[derive(Clone)]
 pub struct CodeGraph {
     // `Arc` because the router hands `&self` to every tool call and the SDK
-    // wants the handler `Clone`; the engine itself is read-only after open.
-    engine: Arc<Engine<Index>>,
+    // wants the handler `Clone`. The engine is read-only once open; when
+    // the watcher brings the store forward it opens a new one and swaps it
+    // in, and a call in flight finishes on the engine it started with.
+    engine: Arc<RwLock<Arc<Engine<Index>>>>,
     tool_router: ToolRouter<Self>,
 }
 
 impl std::fmt::Debug for CodeGraph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CodeGraph")
-            .field("symbols", &self.engine.symbol_count())
+            .field("symbols", &self.engine().symbol_count())
             .finish()
     }
 }
@@ -185,14 +204,66 @@ fn callgraph() -> String {
 #[tool_router(router = tool_router)]
 impl CodeGraph {
     pub fn new(engine: Engine<Index>) -> Self {
-        Self { engine: Arc::new(engine), tool_router: Self::tool_router() }
+        Self { engine: Arc::new(RwLock::new(Arc::new(engine))), tool_router: Self::tool_router() }
+    }
+
+    /// The engine as of now. Held for the length of one call.
+    pub fn engine(&self) -> Arc<Engine<Index>> {
+        self.engine.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Serve a newer engine from here on: the store moved (the watcher, or
+    /// an index run elsewhere) and this one was opened on the new
+    /// generation.
+    pub fn replace(&self, engine: Engine<Index>) {
+        *self.engine.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(engine);
+    }
+
+    /// Keep the served graph current with the tree at `src`: watch it,
+    /// and after each quiet period of `debounce` run one incremental
+    /// update of the store at `store_dir`, rebuild the index overlay, and
+    /// swap in an engine on the new generation. A failed round is
+    /// reported on stderr and the last good engine stays. Returns once
+    /// the watch is armed; the work happens on its own thread.
+    pub fn follow(&self, src: std::path::PathBuf, store_dir: std::path::PathBuf, repo: String, debounce: std::time::Duration) -> Result<(), String> {
+        let watcher = codegraph_resolve::TreeWatcher::new(&src, &store_dir, debounce).map_err(|e| e.to_string())?;
+        let g = self.clone();
+        std::thread::Builder::new()
+            .name("codegraph-sync".into())
+            .spawn(move || {
+                while let Some(batch) = watcher.next() {
+                    let t = std::time::Instant::now();
+                    match codegraph_resolve::sync(&src, &store_dir, &repo, &codegraph_store::CompactPolicy::default()) {
+                        Ok((r, _)) if r.changed == 0 && r.deleted == 0 && r.incremental => {}
+                        Ok((r, _)) => match open_store(&store_dir) {
+                            Ok(e) => {
+                                g.replace(e);
+                                eprintln!(
+                                    "updated: {} changed, {} deleted, {} re-extracted ({}) in {:.1}s after {} event path(s)",
+                                    r.changed,
+                                    r.deleted,
+                                    r.reextracted,
+                                    if r.incremental { r.detection } else { "full rebuild" },
+                                    t.elapsed().as_secs_f64(),
+                                    batch.len()
+                                );
+                            }
+                            Err(e) => eprintln!("update applied but the store could not be reopened: {e:#}"),
+                        },
+                        Err(e) => eprintln!("update failed: {e:#}"),
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// Find symbols whose name or file path contains a substring. Use this
     /// first when you know roughly what something is called but not exactly.
     #[tool(name = "search")]
     async fn search(&self, Parameters(a): Parameters<SearchArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         match e.search(&a.query) {
             Ok(hits) => {
                 let mut out = format!("{} matches for {:?}\n", hits.len(), a.query);
@@ -216,7 +287,8 @@ impl CodeGraph {
         description = "Deep search over the graph. Free terms match symbol names and paths by subword (`upload` finds `MaxUploadSize`), and the insides of functions: their locals and parameters, the callees they call, the variables they read, and the conditions they branch on. Matches spread along calls, references and value flow, so the function that connects two terms scores for both even when neither word is in its name. Filters narrow by structure: `kind:function`, `in:routers/`, `calls:Popen`, `called-by:main`, `references:MaxSize`, `reaches:Exec` (call graph), `flows-to:Exec`, `flows-from:FormValue` (data flow); a library function is named by its bare or qualified name (`exec.Command`). Every hit says why it matched. Use `search` when you know the name; use this when you know what the code does."
     )]
     async fn deep_search(&self, Parameters(a): Parameters<DeepArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let q = codegraph_query::DeepQuery::parse(&a.query);
         if q.terms.is_empty() && q.filters.is_empty() {
             return "give some terms, filters, or both — e.g. `upload limit kind:function calls:Open`".into();
@@ -245,7 +317,8 @@ impl CodeGraph {
     /// Show one symbol: where it is defined, what it calls, and what calls it.
     #[tool(name = "explain")]
     async fn explain(&self, Parameters(a): Parameters<SymbolArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let id = match self.one(&a.symbol) {
             Ok(id) => id,
             Err(msg) => return msg,
@@ -289,7 +362,7 @@ impl CodeGraph {
         description = "Compare the source tree's current files with the index: every symbol (function, method, type, variable, constant, field) that was added, removed, re-signed, redefined or re-bound since the store was indexed. For each: the dependents it breaks outright (callers of a removed or re-signed callable, referencers of a removed variable, subtypes of a removed type) and a trace of what it affects through callers, references, imports, subtypes and value flow, with the relation on every step. Runs the incremental update on a scratch copy; the store is not modified. Use before committing to know what a change reaches."
     )]
     async fn diff(&self, Parameters(a): Parameters<DiffArgs>) -> String {
-        let store_dir = self.engine.store().root().to_path_buf();
+        let store_dir = self.engine().store().root().to_path_buf();
         let opts = codegraph_resolve::DiffOptions { depth: a.depth, ..Default::default() };
         match codegraph_resolve::diff_tree(std::path::Path::new(&a.source), &store_dir, &opts) {
             Ok(r) => r.render(a.limit),
@@ -303,7 +376,8 @@ impl CodeGraph {
         description = "The control-flow graph of a function or method as stored in the index: its basic blocks in order, each block's successors with the branch label and predicate the edge assumes (e.g. `then: x == 1`, `else`, `loop`, `exception`), and the non-local variables and fields each block reads and writes. Locals are not shown: they never leave the function. Empty for anything that is not a callable."
     )]
     async fn cfg(&self, Parameters(a): Parameters<SymbolArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let id = match self.one(&a.symbol) {
             Ok(id) => id,
             Err(msg) => return msg,
@@ -338,7 +412,8 @@ impl CodeGraph {
     /// walk. Use this before editing something to see its blast radius.
     #[tool(name = "affected")]
     async fn affected(&self, Parameters(a): Parameters<WalkArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let id = match self.one(&a.symbol) {
             Ok(id) => id,
             Err(msg) => return msg,
@@ -367,7 +442,8 @@ impl CodeGraph {
     /// indexed call graph.
     #[tool(name = "path")]
     async fn path(&self, Parameters(a): Parameters<PathArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let from = match self.one(&a.from) {
             Ok(id) => id,
             Err(msg) => return msg,
@@ -394,7 +470,8 @@ impl CodeGraph {
     /// One hop from a symbol, in either direction, across all relation types.
     #[tool(name = "neighbors")]
     async fn neighbors(&self, Parameters(a): Parameters<NeighborArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let id = match self.one(&a.symbol) {
             Ok(id) => id,
             Err(msg) => return msg,
@@ -419,7 +496,8 @@ impl CodeGraph {
     /// yourself in unfamiliar code.
     #[tool(name = "context")]
     async fn context(&self, Parameters(a): Parameters<WalkArgs>) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let id = match self.one(&a.symbol) {
             Ok(id) => id,
             Err(msg) => return msg,
@@ -448,7 +526,8 @@ impl CodeGraph {
     /// relation types, and the highest-degree symbols.
     #[tool(name = "stats")]
     async fn stats(&self) -> String {
-        let e = &self.engine;
+        let e = self.engine();
+        let e = &*e;
         let Ok((rels, confs)) = e.edge_histogram() else { return "stats unavailable".into() };
         let mut out = format!(
             "{} symbols, {} edges, {} components\n\nby relation:\n",
@@ -481,8 +560,8 @@ impl CodeGraph {
     /// vulnerabilities.
     #[tool(name = "audit")]
     async fn audit(&self, Parameters(a): Parameters<AuditArgs>) -> String {
-        let e = &self.engine;
-        let sec = Security::new(e.as_ref());
+        let e = self.engine();
+        let sec = Security::new(&e);
         let mut out = String::new();
         match (sec.entrypoints(), sec.reachable_from_entrypoints()) {
             (Ok(eps), Ok(live)) => out.push_str(&format!(
@@ -546,7 +625,8 @@ impl CodeGraph {
     /// actually called.
     #[tool(name = "deps")]
     async fn deps(&self, Parameters(a): Parameters<DepsArgs>) -> String {
-        let sec = Security::new(self.engine.as_ref());
+        let e = self.engine();
+        let sec = Security::new(e.as_ref());
         if a.package.is_empty() {
             return match sec.packages() {
                 Ok(pkgs) => {
@@ -590,14 +670,15 @@ impl CodeGraph {
         if name.trim().is_empty() {
             return Err("a symbol name is required".into());
         }
-        let hits = self.engine.by_name(name);
+        let e = self.engine();
+        let hits = e.by_name(name);
         match hits.len() {
             1 => Ok(hits[0]),
             0 => Err(format!("no symbol named {name:?}")),
             n => {
                 let mut msg = format!("{name:?} is ambiguous — {n} symbols share it:\n");
                 for id in hits.iter().take(10) {
-                    if let Ok(Some(i)) = self.engine.info(*id) {
+                    if let Ok(Some(i)) = e.info(*id) {
                         msg.push_str(&format!("  {}\n", describe(&i)));
                     }
                 }

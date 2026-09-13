@@ -48,6 +48,19 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
+    /// Keep a store current: index the tree, then watch it and re-index
+    /// what changes after each quiet period. Honours `.gitignore` and
+    /// `.codegraphignore`; with git installed, change detection asks git.
+    /// Runs until interrupted.
+    Watch {
+        source: PathBuf,
+        /// Store directory (default: `<source>/.codegraph`).
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Quiet period after the last file-system event before an update, in milliseconds.
+        #[arg(long, default_value_t = 400)]
+        debounce_ms: u64,
+    },
     /// What the uncommitted changes in a source tree do to the graph: every
     /// symbol added, removed, re-signed or redefined since the store was
     /// last indexed, who breaks, and what is affected — traced through
@@ -179,6 +192,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Index { source, store, repo, full } => cmd_index(&source, store, &repo, full),
+        Command::Watch { source, store, debounce_ms } => cmd_watch(&source, store, debounce_ms),
         Command::Compact { store } => cmd_compact(&store),
         Command::Search { store, query, limit } => cmd_search(&store, &query, limit),
         Command::Deep { store, query, limit } => {
@@ -361,11 +375,11 @@ fn cmd_index(source: &Path, store: Option<PathBuf>, repo: &str, full: bool) -> R
         let note = if !r.incremental {
             "rebuilt in full (no usable base, or the deltas had grown past the policy)".to_string()
         } else if r.changed == 0 && r.deleted == 0 {
-            format!("up to date ({} files unchanged)", r.scanned)
+            format!("up to date ({} files unchanged, by {})", r.scanned, r.detection)
         } else {
             let mut n = format!(
-                "incremental: {} changed, {} deleted, {} re-extracted of {} scanned",
-                r.changed, r.deleted, r.reextracted, r.scanned
+                "incremental ({}): {} changed, {} deleted, {} re-extracted of {} scanned",
+                r.detection, r.changed, r.deleted, r.reextracted, r.scanned
             );
             if let Some(c) = &r.compaction {
                 n.push_str(&format!("; merged {} segments into {}", c.segments_before, c.segments_after));
@@ -412,7 +426,97 @@ fn cmd_index(source: &Path, store: Option<PathBuf>, repo: &str, full: bool) -> R
         "  supertypes: {} resolved, {} external; {} structural implements ({} interfaces not comparable)",
         b.supertypes_resolved, b.supertypes_external, b.implements, b.interfaces_skipped
     );
+    println!("{}", git_note(source, &store_dir, !existing || full));
     println!("\nstore: {}", store_dir.display());
+    Ok(())
+}
+
+/// What git has to do with this store: the commit the tree is at, and —
+/// on a fresh index — whether the store was just kept out of the
+/// repository. Read off the store's own record, so a no-op update spawns
+/// no extra git process. Nothing when git is not installed or the tree
+/// is not a repository: the walk and the store's file table do the same
+/// job, slower.
+fn git_note(source: &Path, store_dir: &Path, bootstrap: bool) -> String {
+    let Some(g) = codegraph_resolve::TreeState::load(store_dir).and_then(|t| t.git) else {
+        return "  git: not used (no git binary, not a repository, or no commit yet); changes are found by walking the tree".into();
+    };
+    let mut note = format!(
+        "  git: {} at {} ({} dirty); changes are found through git",
+        g.toplevel,
+        &g.head[..g.head.len().min(10)],
+        g.dirty.len()
+    );
+    if bootstrap
+        && let Some(repo) = codegraph_resolve::detect_git(source)
+        && codegraph_resolve::exclude_store_from_git(&repo, store_dir)
+    {
+        note.push_str("; store added to .git/info/exclude");
+    }
+    note
+}
+
+fn cmd_watch(source: &Path, store: Option<PathBuf>, debounce_ms: u64) -> Result<()> {
+    use codegraph_resolve::{TreeWatcher, sync};
+    use std::time::Duration;
+    let store_dir = store.unwrap_or_else(|| source.join(".codegraph"));
+    let policy = CompactPolicy::default();
+    let stamp = || {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        format!("{:02}:{:02}:{:02}", t / 3600 % 24, t / 60 % 60, t % 60)
+    };
+    // The watch is armed before the first sync so nothing written during
+    // it is missed; an event for a file the sync already read costs one
+    // hash next round.
+    let watcher = TreeWatcher::new(source, &store_dir, Duration::from_millis(debounce_ms))
+        .with_context(|| format!("watching {}", source.display()))?;
+    let t = Instant::now();
+    let (r, _) = sync(source, &store_dir, "", &policy).with_context(|| format!("indexing {}", source.display()))?;
+    println!(
+        "[{}] {} — {} symbols, {} edges ({:.1}s)",
+        stamp(),
+        if r.incremental { format!("up to date: {} changed, {} deleted, {} re-extracted ({})", r.changed, r.deleted, r.reextracted, r.detection) } else { format!("indexed {} files", r.reextracted) },
+        r.symbols,
+        r.edges,
+        t.elapsed().as_secs_f64()
+    );
+    println!("{}", git_note(source, &store_dir, !r.incremental));
+    println!("watching {} (store {}); Ctrl-C to stop", source.display(), store_dir.display());
+    while let Some(batch) = watcher.next() {
+        let t = Instant::now();
+        match sync(source, &store_dir, "", &policy) {
+            Ok((r, _)) if r.incremental && r.changed == 0 && r.deleted == 0 => {
+                let shown: Vec<String> = batch.iter().take(3).map(|p| p.strip_prefix(source).unwrap_or(p).to_string_lossy().replace('\\', "/")).collect();
+                println!(
+                    "[{}] {} event path(s) ({}{}), nothing changed ({}, {:.2}s)",
+                    stamp(),
+                    batch.len(),
+                    shown.join(", "),
+                    if batch.len() > 3 { ", ..." } else { "" },
+                    r.detection,
+                    t.elapsed().as_secs_f64()
+                );
+            }
+            Ok((r, _)) => {
+                let mut what: Vec<&str> = r.changed_paths.iter().chain(&r.deleted_paths).map(String::as_str).collect();
+                what.truncate(5);
+                println!(
+                    "[{}] {} changed, {} deleted, {} re-extracted ({}) in {:.1}s — {} symbols, {} edges{}{}",
+                    stamp(),
+                    r.changed,
+                    r.deleted,
+                    r.reextracted,
+                    if r.incremental { r.detection } else { "full rebuild" },
+                    t.elapsed().as_secs_f64(),
+                    r.symbols,
+                    r.edges,
+                    if what.is_empty() { String::new() } else { format!(": {}", what.join(", ")) },
+                    if r.changed_paths.len() + r.deleted_paths.len() > 5 { ", ..." } else { "" }
+                );
+            }
+            Err(e) => println!("[{}] update failed: {e:#}", stamp()),
+        }
+    }
     Ok(())
 }
 
@@ -846,25 +950,22 @@ fn cmd_verify(store: &Path) -> Result<()> {
     s.verify()?;
     println!("segments: ok ({} live)", s.manifest().segments.len());
 
-    let path = store.join(codegraph_index::BASE_FILE);
-    if path.exists() {
+    if let Some((path, overlay_path)) = codegraph_index::current_files(&s, store) {
         let index = MappedIndex::open_any(&path)?;
         index.verify_checksums()?;
         let generation = s.manifest().generation;
-        if index.generation() == generation {
-            println!("index:    ok ({} bytes mapped)", index.mapped_bytes());
-        } else {
-            let overlay = codegraph_index::Overlay::read(
-                &store.join(codegraph_index::OVERLAY_FILE),
-                generation,
-                index.generation(),
-            )?;
-            println!(
-                "index:    ok ({} bytes mapped, overlay of {} rows, {} patched)",
-                index.mapped_bytes(),
-                overlay.delta_rows(),
-                overlay.patched_rows()
-            );
+        match overlay_path {
+            None if index.generation() == generation => println!("index:    ok ({} bytes mapped)", index.mapped_bytes()),
+            None => println!("index:    stale (generation {} of {generation}); the next open rebuilds it", index.generation()),
+            Some(op) => {
+                let overlay = codegraph_index::Overlay::read(&op, generation, index.generation())?;
+                println!(
+                    "index:    ok ({} bytes mapped, overlay of {} rows, {} patched)",
+                    index.mapped_bytes(),
+                    overlay.delta_rows(),
+                    overlay.patched_rows()
+                );
+            }
         }
     } else {
         println!("index:    absent");

@@ -494,7 +494,8 @@ fn the_layered_index_is_sound_after_every_kind_of_change() {
     let mut store = store;
     compact(&mut store).unwrap();
     assert_eq!(open_or_build(&store, sd.path()).unwrap().1, Opened::Rebuilt);
-    assert!(!sd.path().join(codegraph_index::OVERLAY_FILE).exists(), "a stale overlay was left behind");
+    let leftover: Vec<_> = std::fs::read_dir(sd.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.starts_with("overlay")).collect();
+    assert!(leftover.is_empty(), "a stale overlay was left behind: {leftover:?}");
 }
 
 /// The `flows_to` edges leaving `name`, as `(target path, target name)`.

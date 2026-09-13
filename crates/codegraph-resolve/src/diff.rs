@@ -378,7 +378,7 @@ pub fn diff_tree(source: &Path, store_dir: &Path, opts: &DiffOptions) -> Result<
     for entry in std::fs::read_dir(store_dir).map_err(|e| io_err("reading the store", e))? {
         let entry = entry.map_err(|e| io_err("reading the store", e))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == "CURRENT" || name.starts_with("MANIFEST-") || name.ends_with(".cgseg") {
+        if name == "CURRENT" || name == crate::tree::STATE_FILE || name.starts_with("MANIFEST-") || name.ends_with(".cgseg") {
             std::fs::copy(entry.path(), scratch.path().join(&name)).map_err(|e| io_err("copying the store", e))?;
         }
     }

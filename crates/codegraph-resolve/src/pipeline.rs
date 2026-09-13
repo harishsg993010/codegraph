@@ -11,64 +11,7 @@ use codegraph_store::{
 };
 use rayon::prelude::*;
 
-/// Directories that never hold source we index. A conservative list — anything
-/// missing here costs time, not correctness.
-pub const SKIP_DIRS: &[&str] = &[
-    ".git", ".hg", ".svn", "node_modules", "__pycache__", "target", "dist", "build",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv", "venv", ".tox", "vendor",
-    ".next", ".nuxt", ".cargo", ".rustup",
-];
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct Scan {
-    pub files: Vec<PathBuf>,
-    /// `(size, mtime nanos)` per file, aligned with `files`. Read off the
-    /// directory entry, which on every platform we support already carries
-    /// it — a `stat` per file afterwards would cost more than the walk.
-    pub metadata: Vec<(u64, i64)>,
-    /// Directories skipped by name, so a wrongly-skipped source tree is at
-    /// least traceable rather than silently absent.
-    pub skipped_dirs: usize,
-}
-
-/// Collect indexable files under `root`.
-pub fn scan(root: &Path) -> Scan {
-    let mut out = Scan::default();
-    let mut found: Vec<(PathBuf, (u64, i64))> = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-        for entry in rd.flatten() {
-            let Ok(ft) = entry.file_type() else { continue };
-            // Symlinks are not followed: a link into a sibling checkout would
-            // index the same file twice under two paths, and two paths mean
-            // two identities.
-            if ft.is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            if ft.is_dir() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if SKIP_DIRS.contains(&name.as_ref()) {
-                    out.skipped_dirs += 1;
-                    continue;
-                }
-                stack.push(path);
-            } else if ft.is_file() && lang::for_path(&path).is_some() {
-                let meta = entry.metadata().map(|m| (m.len(), mtime_of(&m))).unwrap_or((0, 0));
-                found.push((path, meta));
-            }
-        }
-    }
-    // Deterministic order, so two runs over the same tree agree.
-    found.sort();
-    for (path, meta) in found {
-        out.files.push(path);
-        out.metadata.push(meta);
-    }
-    out
-}
+pub use crate::tree::{SKIP_DIRS, Scan, scan};
 
 /// Extract every file, in parallel.
 ///
@@ -187,6 +130,10 @@ pub fn index_tree(root: &Path, store: &mut Store, repo: &str) -> Result<IndexRep
     store.remove_files(&gone)?;
     let build = crate::build_rooted(&files, store, repo, &import_roots(root))?;
     compact(store)?;
+    // What the tree looked like, for the next update: captured before the
+    // extraction would be exact; captured after, a file edited during the
+    // index is dirty now and will be re-checked next time. Either is safe.
+    let _ = TreeState::capture(root, repo).save(store.root());
     Ok(IndexReport {
         scanned: scan.files.len(),
         extracted: files.len(),
@@ -219,6 +166,10 @@ pub struct UpdateReport {
     pub changed_paths: Vec<String>,
     pub deleted_paths: Vec<String>,
     pub reextracted_paths: Vec<String>,
+    /// How the changed files were found: `"git"` (the candidates git
+    /// named, checked by hash), `"scan"` (every file, by size, mtime and
+    /// hash), or `"full"` (a rebuild; nothing was compared).
+    pub detection: &'static str,
 }
 
 /// The edges along which a changed file's *targets* have to be re-extracted:
@@ -230,16 +181,91 @@ const HERITAGE: RelationMask = RelationMask::of(&[
     Relation::MixesIn,
 ]);
 
-/// Modification time as nanoseconds since the epoch; `0` when unavailable.
-fn mtime_of(meta: &std::fs::Metadata) -> i64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_nanos() as i64)
-}
+use crate::tree::{TreeState, mtime_of};
 
 fn mtime_nanos(path: &Path) -> i64 {
     std::fs::metadata(path).map_or(0, |m| mtime_of(&m))
+}
+
+/// What an update found to do, and how it found it.
+struct Changes {
+    /// Files whose content differs from the store's copy, or are new to it.
+    changed: Vec<PathBuf>,
+    /// Stored paths no longer in the tree (or no longer indexable).
+    deleted: Vec<String>,
+    /// Every indexable path in the tree now.
+    present: HashSet<String>,
+    /// Files considered: the walk's count, or the store's when git
+    /// answered.
+    scanned: usize,
+    /// `"git"` when git named the candidates, `"scan"` after a walk.
+    how: &'static str,
+    /// Git's view now, to record with the update.
+    git: Option<crate::tree::GitState>,
+}
+
+/// Which files differ from what the store holds.
+///
+/// With git, the candidates are the paths git names — dirty then, dirty
+/// now, changed between the two commits — each checked against the
+/// store by content hash; every other stored file is unchanged by git's
+/// word. Without git, or when git cannot be sure, every file is checked:
+/// unchanged when its size and mtime match the store's record, or failing
+/// that when its content hash does — so an unchanged tree costs one `stat`
+/// per file, and a touched-but-identical file costs one read.
+fn find_changes(
+    root: &Path,
+    stored: &HashMap<String, (u64, i64, u64)>,
+    previous: Option<&TreeState>,
+) -> Changes {
+    let same_root = previous.is_some_and(|p| {
+        std::path::absolute(root).map(|a| a.to_string_lossy().replace('\\', "/")).ok().as_deref() == Some(p.root.as_str())
+    });
+    if same_root && let Some((now, candidates)) = previous.and_then(|p| crate::tree::git_candidates(root, p)) {
+        let mut present: HashSet<String> = stored.keys().cloned().collect();
+        let mut changed = Vec::new();
+        let mut deleted = Vec::new();
+        for rel in candidates {
+            let path = root.join(&rel);
+            if crate::tree::is_indexable(root, &rel) {
+                present.insert(rel.clone());
+                let unchanged = stored
+                    .get(&rel)
+                    .is_some_and(|&(hash, _, _)| std::fs::read(&path).is_ok_and(|b| content_hash(&b) == hash));
+                if !unchanged {
+                    changed.push(path);
+                }
+            } else if stored.contains_key(&rel) {
+                present.remove(&rel);
+                deleted.push(rel);
+            }
+        }
+        changed.sort();
+        deleted.sort();
+        return Changes { changed, deleted, scanned: present.len(), present, how: "git", git: Some(now) };
+    }
+
+    let scan = scan(root);
+    let mut present: HashSet<String> = HashSet::with_capacity(scan.files.len());
+    let mut changed: Vec<PathBuf> = Vec::new();
+    for (path, &(now_size, now_mtime)) in scan.files.iter().zip(&scan.metadata) {
+        let rel = rel_path(root, path);
+        let unchanged = match stored.get(&rel) {
+            Some(&(hash, mtime, size)) if now_size == size => {
+                (mtime != 0 && now_mtime == mtime)
+                    || std::fs::read(path).is_ok_and(|bytes| content_hash(&bytes) == hash)
+            }
+            _ => false,
+        };
+        present.insert(rel);
+        if !unchanged {
+            changed.push(path.clone());
+        }
+    }
+    let mut deleted: Vec<String> = stored.keys().filter(|p| !present.contains(*p)).cloned().collect();
+    deleted.sort();
+    let git = crate::tree::detect_git(root).and_then(|r| crate::tree::git_state(root, &r));
+    Changes { changed, deleted, scanned: scan.files.len(), present, how: "scan", git }
 }
 
 /// Repo-relative, forward slashes: the path as the store spells it.
@@ -304,10 +330,9 @@ pub fn update_tree(
             changed_paths: Vec::new(),
             deleted_paths: Vec::new(),
             reextracted_paths: Vec::new(),
+            detection: "full",
         });
     }
-
-    let scan = scan(root);
 
     // --- what changed ---
     let stored: HashMap<String, (u64, i64, u64)> = store
@@ -317,28 +342,18 @@ pub fn update_tree(
         .filter(|(p, _)| !p.is_empty())
         .map(|(p, r)| (p.to_string(), (r.content_hash, r.mtime_nanos, r.size)))
         .collect();
-    let mut present: HashSet<String> = HashSet::with_capacity(scan.files.len());
-    let mut changed: Vec<PathBuf> = Vec::new();
-    for (path, &(now_size, now_mtime)) in scan.files.iter().zip(&scan.metadata) {
-        let rel = rel_path(root, path);
-        let unchanged = match stored.get(&rel) {
-            Some(&(hash, mtime, size)) if now_size == size => {
-                (mtime != 0 && now_mtime == mtime)
-                    || std::fs::read(path).is_ok_and(|bytes| content_hash(&bytes) == hash)
-            }
-            _ => false,
-        };
-        present.insert(rel);
-        if !unchanged {
-            changed.push(path.clone());
-        }
-    }
-    let deleted: Vec<String> =
-        stored.keys().filter(|p| !present.contains(*p)).cloned().collect();
+    let previous = TreeState::load(store.root());
+    let Changes { changed, deleted, present, scanned, how, git } = find_changes(root, &stored, previous.as_ref());
+    let state = TreeState {
+        root: std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()).to_string_lossy().replace('\\', "/"),
+        repo: repo.to_string(),
+        git,
+    };
 
     if changed.is_empty() && deleted.is_empty() {
+        let _ = state.save(store.root());
         return Ok(UpdateReport {
-            scanned: scan.files.len(),
+            scanned,
             changed: 0,
             deleted: 0,
             reextracted: 0,
@@ -350,6 +365,7 @@ pub fn update_tree(
             changed_paths: Vec::new(),
             deleted_paths: Vec::new(),
             reextracted_paths: Vec::new(),
+            detection: how,
         });
     }
 
@@ -497,6 +513,7 @@ pub fn update_tree(
             changed_paths: changed.iter().map(|p| rel_path(root, p)).collect(),
             deleted_paths: deleted,
             reextracted_paths: Vec::new(),
+            detection: "full",
         });
     }
 
@@ -519,9 +536,10 @@ pub fn update_tree(
     // Only the delta tier: the ratio was applied above, as a rebuild.
     let deltas_only = CompactPolicy { max_delta_ratio: f64::INFINITY, ..*policy };
     let compaction = compact_tiered(store, &deltas_only)?;
+    let _ = state.save(store.root());
 
     Ok(UpdateReport {
-        scanned: scan.files.len(),
+        scanned,
         changed: changed.len(),
         deleted: deleted.len() + failed.len(),
         reextracted: files.len(),
@@ -533,6 +551,7 @@ pub fn update_tree(
         changed_paths: changed.iter().map(|p| rel_path(root, p)).collect(),
         deleted_paths: deleted.into_iter().chain(failed).collect(),
         reextracted_paths: files.iter().map(|f| f.path.clone()).collect(),
+        detection: how,
     })
 }
 

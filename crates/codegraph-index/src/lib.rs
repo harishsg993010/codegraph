@@ -16,7 +16,7 @@ pub mod scc;
 
 pub use build::{IndexData, MIN_HUB_THRESHOLD, REACHABILITY_RELATIONS, trigrams};
 pub use grail::Grail;
-pub use layered::{BASE_FILE, Layered, OVERLAY_FILE, OpenError, Opened, Overlay, open_or_build};
+pub use layered::{BASE_FILE, Layered, OVERLAY_FILE, OpenError, Opened, Overlay, current_files, open_or_build};
 pub use mapped::MappedIndex;
 pub use persist::{IndexFileError, index_name};
 pub use view::{IndexColumns, IndexQuery};

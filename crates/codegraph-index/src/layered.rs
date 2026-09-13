@@ -681,9 +681,94 @@ impl<B: IndexColumns> IndexQuery for Layered<B> {
     }
 }
 
-/// Which files an index lives in, inside a store directory.
+/// The names an index lives under, inside a store directory.
+///
+/// Every file is named by the generation it describes — `index-7.cgidx`,
+/// `overlay-9.cgidx` — and is written once. A server has the current base
+/// mapped while an update writes the next; on Windows a mapped file can
+/// be neither overwritten nor renamed over, so a new generation is a new
+/// file, and files no longer needed are removed when nothing maps them
+/// any more (best effort, retried at every open). The unnumbered names
+/// are what earlier versions wrote; they are still read.
 pub const BASE_FILE: &str = "index.cgidx";
 pub const OVERLAY_FILE: &str = "overlay.cgidx";
+
+fn base_file(generation: u64) -> String {
+    format!("index-{generation}.cgidx")
+}
+fn overlay_file(generation: u64) -> String {
+    format!("overlay-{generation}.cgidx")
+}
+
+/// The index files in a store directory: `(path, is_overlay, generation)`,
+/// legacy unnumbered names with generation `None`.
+fn index_files(dir: &Path) -> Vec<(std::path::PathBuf, bool, Option<u64>)> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut v = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(stem) = name.strip_suffix(".cgidx") else { continue };
+        if let Some(g) = stem.strip_prefix("index-") {
+            if let Ok(g) = g.parse() {
+                v.push((e.path(), false, Some(g)));
+            }
+        } else if let Some(g) = stem.strip_prefix("overlay-") {
+            if let Ok(g) = g.parse() {
+                v.push((e.path(), true, Some(g)));
+            }
+        } else if stem == "index" {
+            v.push((e.path(), false, None));
+        } else if stem == "overlay" {
+            v.push((e.path(), true, None));
+        }
+    }
+    v.sort();
+    v
+}
+
+/// The base index a store's current generation can be served from: one
+/// that describes it exactly, or the newest that was built over the
+/// store's first segment and so can carry an overlay. `(path, index)`.
+fn select_base(dir: &Path, generation: u64, first: Option<u64>) -> Option<(std::path::PathBuf, crate::MappedIndex)> {
+    let mut candidates: Vec<(std::path::PathBuf, crate::MappedIndex)> = index_files(dir)
+        .into_iter()
+        .filter(|(_, overlay, _)| !overlay)
+        .filter_map(|(p, _, _)| crate::MappedIndex::open_any(&p).ok().map(|m| (p, m)))
+        .collect();
+    if let Some(i) = candidates.iter().position(|(_, m)| m.generation() == generation) {
+        return Some(candidates.swap_remove(i));
+    }
+    candidates.retain(|(_, m)| m.segment_id().is_some() && m.segment_id() == first);
+    candidates.sort_by_key(|(_, m)| m.generation());
+    candidates.pop()
+}
+
+/// The index files serving `generation` now: the base, and the overlay if
+/// one is in use. What `verify` and `stats` should look at.
+pub fn current_files(store: &Store, dir: &Path) -> Option<(std::path::PathBuf, Option<std::path::PathBuf>)> {
+    let generation = store.manifest().generation;
+    let first = store.segments().next().map(|(id, _)| id);
+    let (base_path, base) = select_base(dir, generation, first)?;
+    if base.generation() == generation {
+        return Some((base_path, None));
+    }
+    let overlay = [dir.join(overlay_file(generation)), dir.join(OVERLAY_FILE)]
+        .into_iter()
+        .find(|p| Overlay::read(p, generation, base.generation()).is_ok());
+    Some((base_path, overlay))
+}
+
+/// Remove every index file but the ones in use. A file another process
+/// still maps cannot be removed on every platform; it is left for the
+/// next sweep.
+fn sweep_index_files(dir: &Path, keep: &[&Path]) {
+    for (p, _, _) in index_files(dir) {
+        if !keep.iter().any(|k| *k == p) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
@@ -721,30 +806,35 @@ pub fn open_or_build(
     let generation = store.manifest().generation;
     let first = store.segments().next().map(|(id, _)| id);
     let single = store.segments().count() == 1;
-    let base_path = dir.join(BASE_FILE);
-    let overlay_path = dir.join(OVERLAY_FILE);
 
-    if let Ok(base) = crate::MappedIndex::open_any(&base_path) {
+    if let Some((base_path, base)) = select_base(dir, generation, first) {
         if base.generation() == generation {
+            sweep_index_files(dir, &[&base_path]);
             return Ok((Layered::plain(base), Opened::Base));
         }
         if let Some(seg) = base.segment_id()
             && Some(seg) == first
         {
-            if let Ok(o) = Overlay::read(&overlay_path, generation, base.generation()) {
-                return Ok((Layered::with_overlay(base, o)?, Opened::Overlaid));
+            let overlay_path = dir.join(overlay_file(generation));
+            for p in [overlay_path.clone(), dir.join(OVERLAY_FILE)] {
+                if let Ok(o) = Overlay::read(&p, generation, base.generation()) {
+                    sweep_index_files(dir, &[&base_path, &p]);
+                    return Ok((Layered::with_overlay(base, o)?, Opened::Overlaid));
+                }
             }
             let o = Overlay::build(store, &base, base.generation(), seg)?;
             o.write(&overlay_path)?;
+            sweep_index_files(dir, &[&base_path, &overlay_path]);
             return Ok((Layered::with_overlay(base, o)?, Opened::OverlayBuilt));
         }
     }
 
     let data = crate::IndexData::build(store)?;
+    let base_path = dir.join(base_file(generation));
     match (single, first) {
         (true, Some(seg)) => data.write_base(&base_path, generation, seg)?,
         _ => data.write(&base_path, generation)?,
     }
-    let _ = std::fs::remove_file(&overlay_path);
+    sweep_index_files(dir, &[&base_path]);
     Ok((Layered::plain(crate::MappedIndex::open(&base_path, generation)?), Opened::Rebuilt))
 }

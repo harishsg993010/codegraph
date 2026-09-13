@@ -14,7 +14,7 @@ format change (the index file format is bumped to v2; it is derived data).
 | crate | change |
 |---|---|
 | `codegraph-store` | **`View`**: one store-wide id space over every live segment, with dead and duplicated rows forwarded to the row that counts. **Tiered compaction**: deltas merge among themselves; the base is not touched by a merge. File metadata (content hash, mtime, size, language) survives compaction — it was being zeroed. `Store::remove_files`. |
-| `codegraph-index` | Read through the view. **`Layered` index**: the base `.cgidx` stays; each generation gets a small `overlay.cgidx` with the delta rows' degrees and postings, degree patches for touched base rows, and a sound reachability extension. The query surface (`IndexQuery`) is split from the column layout (`IndexColumns`) so a layered index can answer without contiguous columns. |
+| `codegraph-index` | Read through the view. **`Layered` index**: the base `.cgidx` stays; each generation gets a small overlay file (`overlay-<gen>.cgidx` since Phase 12) with the delta rows' degrees and postings, degree patches for touched base rows, and a sound reachability extension. The query surface (`IndexQuery`) is split from the column layout (`IndexColumns`) so a layered index can answer without contiguous columns. |
 | `-query` / `-security` / `-verify` | Read through the view instead of "the one segment". |
 | `codegraph-resolve` | Resolution runs over a corpus that is partly fresh extracts and partly context read back from the store; only the fresh files are written. **`update_tree`**: change detection, the re-extraction neighbourhood, deletions, delta build, policy. |
 | `codegraph` CLI | `index` is incremental on an existing store; `--full` forces a rebuild; new `compact`. |

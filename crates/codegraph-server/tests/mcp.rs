@@ -61,6 +61,56 @@ async fn connect() -> (tempfile::TempDir, tempfile::TempDir, rmcp::service::Runn
     (src, sd, client)
 }
 
+/// The served graph follows the tree: a file written after the server is
+/// up is searchable without a restart, and one removed is gone.
+#[tokio::test]
+async fn the_server_follows_the_tree() {
+    let src = tempfile::tempdir().expect("tempdir");
+    project(src.path());
+    let sd = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::create(sd.path()).expect("create");
+    index_tree(src.path(), &mut store, "").expect("index");
+    drop(store);
+    let engine = codegraph_server::open_store(sd.path()).expect("open");
+    let graph = CodeGraph::new(engine);
+    graph
+        .follow(src.path().to_path_buf(), sd.path().to_path_buf(), String::new(), std::time::Duration::from_millis(150))
+        .expect("watch starts");
+
+    let (client_io, server_io) = tokio::io::duplex(8 * 1024 * 1024);
+    tokio::spawn(async move {
+        let service = graph.serve(server_io).await.expect("server start");
+        let _ = service.waiting().await;
+    });
+    let client = ().serve(client_io).await.expect("client connect");
+
+    let text = call(&client, "search", object!({"query": "late_arrival"})).await;
+    assert!(text.starts_with("0 matches"), "got: {text}");
+
+    write(src.path(), "app/late.py", "def late_arrival():\n    return 1\n");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let text = call(&client, "search", object!({"query": "late_arrival"})).await;
+        if text.contains("app/late.py") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the new file never appeared: {text}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    std::fs::remove_file(src.path().join("app/late.py")).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let text = call(&client, "search", object!({"query": "late_arrival"})).await;
+        if text.starts_with("0 matches") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the removed file never went: {text}");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    client.cancel().await.ok();
+}
+
 /// Call a tool and return its text content.
 async fn call(
     client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,

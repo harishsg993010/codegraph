@@ -54,9 +54,40 @@ sql-injection:     1508 sources x 14 sinks, 14 sinks searched, 7 findings (83 ms
 path-traversal:    1738 sources x 86 sinks, 58 sinks searched, 20 findings (145 ms)
 ```
 
-Gitea is 3,342 Go/JS/TS files. A one-line body edit re-indexes in 0.6 s
+Gitea is 3,342 Go/JS/TS files. A one-line body edit re-indexes in 0.7 s
 and diffs in 0.7 s; base + deltas stay edge-for-edge identical to a fresh
 index, which the test suite and `codegraph-verify` check.
+
+## Keeping up with the tree
+
+`codegraph index` on an existing store is incremental. **With git
+installed and the tree in a repository, it asks git what changed**: the
+store records the commit and the dirty set it indexed, the next update
+runs `git rev-parse` and `git status`, and only the files git names are
+checked by content hash — O(changes), on git's own stat cache. On a
+fresh index the store directory is added to `.git/info/exclude` so it
+never ends up committed. **Without git**, or whenever git cannot be sure,
+the store's file table does what git's index does — path, size, mtime,
+content hash per file — and every file is compared; the graph is the
+same either way.
+
+**`.codegraphignore`** keeps files out of the graph: gitignore syntax, at
+any directory, `!` re-includes. `.gitignore` and `.git/info/exclude` are
+honoured too, git or no git.
+
+```
+# .codegraphignore
+generated/
+fixtures/
+!fixtures/real_case.py
+*.pb.go
+```
+
+**`codegraph watch ./repo`** indexes the tree, then watches it and
+re-indexes what changes after each quiet period. **`codegraph-mcp`** does
+the same by default: it watches the tree the store came from and serves
+each new generation without a restart, so a model editing the tree asks
+questions of the tree as it is.
 
 ## What is in the graph
 
@@ -102,7 +133,8 @@ that direction, and the limits are stated in the docs.
 
 | command | what it answers |
 |---|---|
-| `index <src> [--store dir] [--full]` | Build the store. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. A one-line edit on a 3,300-file tree is 0.6 s; a full index is 14–17 s. |
+| `index <src> [--store dir] [--full]` | Build the store. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. Changed files are found through git when git is there, by a walk otherwise. A one-line edit on a 3,300-file tree is 0.7 s; a full index is 16–20 s. |
+| `watch <src> [--store dir] [--debounce-ms n]` | Index, then keep the store current: re-index what changes after each quiet period, one line per round. |
 | `search <store> <query>` | Symbols by name, prefix, substring or path. |
 | `deep <store> <terms and filters>` | **Deep search**: find code by what it is connected to. Terms match names and paths by subword, and the inside of functions — locals, parameters, callees, referenced variables, branch conditions; matches spread along calls, references and value flow, so the function that connects two terms scores for both. Filters: `kind:`, `in:`, `calls:`, `called-by:`, `references:`, `referenced-by:`, `reaches:`, `flows-to:`, `flows-from:`. Every hit says why. |
 | `explain <store> <symbol>` | What a symbol is and what it connects to: members, parameters, locals, callers, callees, references, flows in and out, CFG size. `func.local` and `path:name` disambiguate. |
@@ -114,10 +146,11 @@ that direction, and the limits are stated in the docs.
 | `deps <store> [package]` | Which of our code reaches an external package. |
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
 
-`codegraph-mcp <store>` serves the same questions as MCP tools (`search`,
-`deep_search`, `explain`, `cfg`, `affected`, `path`, `neighbors`,
-`context`, `stats`, `audit`, `deps`, `diff`) for a model working in the
-tree.
+`codegraph-mcp <store> [--no-watch] [--debounce-ms n]` serves the same
+questions as MCP tools (`search`, `deep_search`, `explain`, `cfg`,
+`affected`, `path`, `neighbors`, `context`, `stats`, `audit`, `deps`,
+`diff`) for a model working in the tree, and follows the tree as it
+changes.
 
 ## Build
 
@@ -136,7 +169,7 @@ cargo test --workspace
 |---|---|
 | `codegraph-core` | Vocabulary: symbol kinds, relations, masks; stable 128-bit symbol keys. |
 | `codegraph-extract` | Tree-sitter walk, per-language syntax tables, the per-body flow analysis (`flow.rs`), library summaries. |
-| `codegraph-resolve` | Turns extracted facts into a graph: call binding, imports, heritage, stubs, proxies, flows, locals; the incremental pipeline; `diff`. |
+| `codegraph-resolve` | Turns extracted facts into a graph: call binding, imports, heritage, stubs, proxies, flows, locals; the incremental pipeline; the tree (`tree.rs`: ignore rules, git, the `TREE` record) and the watcher (`watch.rs`); `diff`. |
 | `codegraph-store` | The segment format, the manifest, the store-wide `View` over base and delta segments, compaction. |
 | `codegraph-index` | Degrees, hubs, SCC + reachability labels, name and trigram postings; the layered (base + overlay) index. |
 | `codegraph-query` | The query engine: search, deep search (`deep.rs`), explain, walks, paths, blast radius, CFG. |
@@ -160,6 +193,8 @@ files), the bugs each phase surfaced, and the limits stated plainly:
   sensitivity, richer predicates, user summaries, flow-sensitive locals.
 - `docs/phase11-results.md` — `deep` search; condition reads as
   references; `calls` edges to library stubs.
+- `docs/phase12-results.md` — change detection through git,
+  `.codegraphignore`, `watch`, the server following the tree.
 
 ## Limits
 
@@ -187,6 +222,10 @@ the rest is fundamental.
 - **Sinks by name**: the starter specs match `Exec`, `Open` by name; a
   database `Exec` and a shell `Exec` are one sink until a spec qualifies
   them.
+- **Git** accelerates change detection; it does not decide what is
+  indexed — `.gitignore` and `.codegraphignore` do, git or no git. Any
+  doubt (no record, a rewritten commit, an ignore file changed) falls
+  back to the walk, which is always correct.
 - **Deep search** matches what the graph holds — names, paths, locals,
   parameters, callees, referenced variables, branch predicates — not
   string literals or comments; spreading is two hops and never through a
