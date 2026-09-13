@@ -61,14 +61,14 @@ $ codegraph diff ./gitea          # after adding a parameter in modules/util/tru
 summary: 1 change(s), 1 breaking, 266 symbol(s) affected
 (5.7 s)
 
-$ codegraph audit ./gitea --kind taint         # rules from ./gitea/.codegraph-rules.yaml
-go-command-injection [ERROR] — A request value reaches a shell command
-  1845 sources x 1 sinks, 1 sinks searched, 191 finding(s) (120 ms)
-  requestJSONResp (external) -> CommandContext (external)  [3 hops, Inferred, unreachable]
-      via requestJSONResp -> resp -> ... -> CommandContext
+$ codegraph audit ./gitea --kind taint --rules rules/codegraph
+go.command-injection [ERROR] — A request value reaches a process spawn
+  1411 sources x 2 sinks, 2 sinks searched, 97 finding(s) (118 ms)
+  Getenv (external) -> CommandContext (external)  [2 hops, Inferred, live]
+      via Getenv -> Clone -> CommandContext
   ...
-go-path-traversal [WARNING] — A request value reaches a file open
-  1845 sources x 5 sinks, 5 sinks searched, 43 finding(s) (115 ms)
+go.path-traversal [WARNING] — A request value reaches a file operation
+  1409 sources x 14 sinks, 14 sinks searched, 142 finding(s) (194 ms)
   ...
 ```
 
@@ -145,14 +145,31 @@ rules:
 ```
 
 A `pattern` names a symbol: `Name`, `Name*`, `*Name`, `*Name*`,
-`Owner.Name`; a source is a function (its return) or a parameter, a sink
-a function or library call (its arguments). `codegraph audit ./repo`
-reports per rule with severity and message; `--format json` for tooling,
-`--fail-on ERROR` for CI. `rules/starter.yaml` is a starting point to
-copy; `rules/codegraph/` is the rule set proper — 108 rules over Python,
-JavaScript/TypeScript, Java, Go, Ruby, C#, C/C++ and Rust, one file per
-language, Apache-2.0; `codegraph rules check <file-or-dir>`
-validates a rule set.
+`Owner.Name`, `Owner.*`; a source is a function (its return) or a
+parameter, a sink a function or library call (its arguments).
+`codegraph audit ./repo` reports per rule with severity and message;
+`--format json` for tooling, `--fail-on ERROR` for CI;
+`codegraph rules check <file-or-dir>` validates a rule set.
+
+**The rule set** is `rules/codegraph/`, 108 rules, Apache-2.0, one file
+per language; run it with `--rules rules/codegraph` or copy what you
+need into `.codegraph-rules.yaml`:
+
+| file | rules | what they ask |
+|---|---|---|
+| `python.yaml` | 16 | command / code / SQL / NoSQL / LDAP / XPath / template injection, path traversal, SSRF, open redirect, XSS, deserialisation, XXE, log injection, weak RNG reaching keys |
+| `javascript.yaml` (JS, TS, TSX) | 15 | child_process, eval / vm, SQL, fs, SSRF, redirects, DOM and reflected XSS, deserialisation, prototype pollution, regex and NoSQL injection, XXE, headers, `Math.random` reaching secrets |
+| `java.yaml` | 16 | `Runtime.exec` / `ProcessBuilder`, JDBC / JPA / Hibernate, file APIs, HTTP clients, redirects, XSS, `ObjectInputStream` / XStream / SnakeYAML, XXE, XPath, LDAP, SpEL / OGNL / Groovy, templates, reflection, headers, logs, `Random` |
+| `go.yaml` | 13 | `exec`, `database/sql` + gorm / xorm / sqlx, `os` / `filepath`, `net/http` clients, redirects, `template.HTML`, template parsing, LDAP, XPath, headers, logs, `math/rand`, gob / yaml |
+| `ruby.yaml` | 14 | `system` / `Open3` / backticks, `eval` / `send` / `constantize`, ActiveRecord fragments, `File` / `send_file`, HTTP clients, `redirect_to`, `html_safe`, `Marshal` / `YAML`, Nokogiri, mass assignment, `Regexp`, headers, logs, `rand` |
+| `csharp.yaml` | 13 | `Process.Start`, ADO.NET / EF / Dapper, `System.IO`, `HttpClient`, `Redirect`, `Html.Raw`, `BinaryFormatter` / `TypeNameHandling`, `XmlDocument`, `DirectorySearcher`, XPath, headers, logs, `Random` |
+| `c-cpp.yaml` | 8 | `system` / `exec` / `CreateProcess`, format strings, `strcpy` / `sprintf` / `memcpy`, `fopen` / `open` / `CreateFile`, sqlite / mysql / libpq, `dlopen`, input-sized allocation, `rand` reaching keys |
+| `rust.yaml` | 13 | `Command`, sqlx / diesel / postgres, `std::fs` / `tokio::fs`, reqwest / ureq, redirects, `Html` / `PreEscaped`, tera / handlebars / minijinja, serde_yaml / bincode / archives, XML, `Regex`, headers, logs, `rand` reaching keys |
+
+Every rule names its CWE and OWASP category and its sanitisers; the
+sources are each platform's conventions (`request`, `req`, `r`, `params`,
+`argv`, the environment), because the graph holds names, not types.
+`rules/starter.yaml` is the same idea in seven rules, to copy and edit.
 
 ## What is in the graph
 

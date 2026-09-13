@@ -133,7 +133,8 @@ library stubs.
 
 | | |
 |---|---|
-| `rules/starter.yaml`, 7 rules | Go: command injection 191 findings (sources `r`, `req`, `*Request*`; 1 sink, `exec.CommandContext`), path traversal 43 (5 sinks); the Python, JavaScript and Java rules 0 sources or 0 sinks, as they should on a Go corpus |
+| `rules/codegraph/`, 108 rules | 6.6 s for all of them including the store open; Go: command injection 97 findings (2 sinks), path traversal 142 (14), SSRF 80, open redirect 134, XSS 82; JavaScript: SSRF 6, DOM XSS 7, NoSQL 1; the Python, Ruby, Java, C#, C and Rust rules 0 sources or 0 sinks, as they should on a Go/TypeScript corpus |
+| `rules/starter.yaml`, 7 rules | Go: command injection 191 findings (sources `r`, `req`, `*Request*`; 1 sink, `exec.CommandContext`), path traversal 43 (5 sinks); the Python, JavaScript and Java rules 0 sources or 0 sinks |
 | each rule | 20–120 ms after the store is open |
 | starter specs (`--presets`, taint mode, field-test excludes) | 361 / 7 / 46 — up from 20 / 7 / 20 in Phase 11 because a source pattern now also names **parameters** (`*request*` matches every `request` parameter), which is what a taint question means by a source |
 
