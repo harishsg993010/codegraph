@@ -6,7 +6,9 @@ value flow — stores it in an mmap'd columnar format that updates
 incrementally, and answers questions over it from a CLI or an MCP server:
 what calls this, what breaks if I change it, does this request parameter
 reach `Popen`, where is the upload limit enforced, and what does my
-uncommitted edit actually touch.
+uncommitted edit actually touch. Point any command at a source tree: it is
+indexed on first use and kept current — through git when git is there —
+before every answer after.
 
 Eleven languages through one generic tree-sitter walk driven by per-language
 syntax tables: Python, JavaScript, TypeScript, TSX, Java, C, C++, Go, Rust,
@@ -45,15 +47,17 @@ $ codegraph diff ./gitea          # after adding a parameter in modules/util/tru
 summary: 1 change(s), 1 breaking, 266 symbol(s) affected
 (5.7 s)
 
-$ codegraph audit ./gitea/.codegraph --mode dataflow --exclude _test.go --exclude tests/integration/
+$ codegraph audit ./gitea --mode dataflow --exclude _test.go --exclude tests/integration/
 command-injection: 1377 sources x 60 sinks, 48 sinks searched, 20 findings (239 ms)
 sql-injection:     1508 sources x 14 sinks, 14 sinks searched, 7 findings (83 ms)
 path-traversal:    1738 sources x 86 sinks, 58 sinks searched, 20 findings (145 ms)
 ```
 
-Gitea is 3,342 Go/JS/TS files. A one-line body edit re-indexes in 0.7 s
-and diffs in 0.7 s; base + deltas stay edge-for-edge identical to a fresh
-index, which the test suite and `codegraph-verify` check.
+Gitea is 3,342 Go/JS/TS files. The first command indexes it in 16–20 s;
+after a one-line edit the next command updates the store in 0.7 s before
+answering; `diff` runs in 0.7 s; base + deltas stay edge-for-edge
+identical to a fresh index, which the test suite and `codegraph-verify`
+check.
 
 ## Nothing to run by hand
 
@@ -137,11 +141,14 @@ that direction, and the limits are stated in the docs.
 
 ## Commands
 
+`<store>` below is a store directory or a source tree — a tree is
+indexed on first use and synced before every answer.
+
 | command | what it answers |
 |---|---|
 | `index <src> [--store dir] [--full]` | Build the store explicitly — the other commands do this on first use and keep it current after. On an existing store this is **incremental**: only changed files and their neighbourhood are re-extracted, into a delta segment; the index gets an overlay, not a rebuild. Changed files are found through git when git is there, by a walk otherwise. A one-line edit on a 3,300-file tree is 0.7 s; a full index is 16–20 s. |
 | `watch <src> [--store dir] [--debounce-ms n]` | Index, then keep the store current: re-index what changes after each quiet period, one line per round. |
-| `search <store-or-tree> <query>` | Symbols by name, prefix, substring or path. |
+| `search <store> <query>` | Symbols by name, prefix, substring or path. |
 | `deep <store> <terms and filters>` | **Deep search**: find code by what it is connected to. Terms match names and paths by subword, and the inside of functions — locals, parameters, callees, referenced variables, branch conditions; matches spread along calls, references and value flow, so the function that connects two terms scores for both. Filters: `kind:`, `in:`, `calls:`, `called-by:`, `references:`, `referenced-by:`, `reaches:`, `flows-to:`, `flows-from:`. Every hit says why. |
 | `explain <store> <symbol>` | What a symbol is and what it connects to: members, parameters, locals, callers, callees, references, flows in and out, CFG size. `func.local` and `path:name` disambiguate. |
 | `path <store> <a> <b>` | Shortest path between two symbols. |
@@ -151,23 +158,31 @@ that direction, and the limits are stated in the docs.
 | `audit <store> [--mode callgraph\|dataflow]` | Taint analyses from starter specs (command injection, SQL injection, path traversal). Call-graph mode: a call path from a source to a sink function. Dataflow mode: a *value* from a source reaching a sink's argument, sanitiser-aware, call-site-matched through callees and library stubs. |
 | `deps <store> [package]` | Which of our code reaches an external package. |
 | `stats`, `verify`, `compact` | Store statistics; checksum verification; merge every segment into one. |
+| `--no-sync` (any command; or `CODEGRAPH_NO_SYNC=1`) | Answer from the store as it is, without bringing it up to date first. |
 
 `codegraph-mcp <store> [--no-watch] [--debounce-ms n]` serves the same
 questions as MCP tools (`search`, `deep_search`, `explain`, `cfg`,
 `affected`, `path`, `neighbors`, `context`, `stats`, `audit`, `deps`,
-`diff`) for a model working in the tree, and follows the tree as it
-changes.
+`diff`) for a model working in the tree: it takes a store or a tree,
+syncs at startup, then watches the tree and serves each new generation
+without a restart.
 
 ## Build
 
-Rust 1.85+ (edition 2024).
+Rust 1.89+ (edition 2024). `git` is optional: with it on the path, change
+detection is O(changes); without it, every file is compared by size,
+mtime and hash.
 
 ```
 cargo build --release
-./target/release/codegraph index <source-dir>
-./target/release/codegraph explain <source-dir>/.codegraph <symbol>
+./target/release/codegraph explain <source-dir> <symbol>     # indexes on first use
+./target/release/codegraph deep <source-dir> upload limit kind:function
 cargo test --workspace
 ```
+
+The store lives in `<source-dir>/.codegraph` (or wherever `--store`
+says); the test suite needs no network and skips the git tests when no
+`git` binary is installed.
 
 ## Layout
 
@@ -199,8 +214,9 @@ files), the bugs each phase surfaced, and the limits stated plainly:
   sensitivity, richer predicates, user summaries, flow-sensitive locals.
 - `docs/phase11-results.md` — `deep` search; condition reads as
   references; `calls` edges to library stubs.
-- `docs/phase12-results.md` — change detection through git,
-  `.codegraphignore`, `watch`, the server following the tree.
+- `docs/phase12-results.md` — index on first use and sync before every
+  answer; change detection through git; `.codegraphignore`; `watch`; the
+  server following the tree; the store lock.
 
 ## Limits
 
@@ -232,6 +248,9 @@ the rest is fundamental.
   indexed — `.gitignore` and `.codegraphignore` do, git or no git. Any
   doubt (no record, a rewritten commit, an ignore file changed) falls
   back to the walk, which is always correct.
+- **The pre-answer sync** costs a no-op update on every command: ≈ 0.25 s
+  of `git` on a 3,300-file tree, a walk without git. `--no-sync` skips
+  it; a running `watch` or server leaves it nothing to find.
 - **Deep search** matches what the graph holds — names, paths, locals,
   parameters, callees, referenced variables, branch predicates — not
   string literals or comments; spreading is two hops and never through a

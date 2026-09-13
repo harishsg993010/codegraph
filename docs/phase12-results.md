@@ -1,6 +1,6 @@
-# Phase 12 — The tree as a live thing: git, `.codegraphignore`, `watch`
+# Phase 12 — The tree as a live thing: sync on every answer, git, `.codegraphignore`, `watch`
 
-Three changes to how a store relates to the tree it was built from. With
+Four changes to how a store relates to the tree it was built from. With
 git installed and the tree in a repository, an update asks git which files
 can have changed and checks only those — O(changes), not O(files), on
 git's own stat cache. Without git, or when git cannot be sure, the
@@ -55,10 +55,11 @@ watching ./gitea (store ./gitea/.codegraph); Ctrl-C to stop
 [03:32:10] 1 changed, 0 deleted, 1 re-extracted (git) in 0.7s — 352266 symbols, 2299031 edges: modules/util/truncate.go
 ```
 
-`codegraph-mcp ./gitea/.codegraph` does the same on its own: it reads the
-tree's location from the store, watches it, and after each quiet period
-brings the store forward and serves the new generation. `--no-watch`
-turns that off; `--debounce-ms` sets the quiet period (default 400).
+`codegraph-mcp ./gitea` does the same on its own: it takes a store or a
+tree, syncs at startup, reads the tree's location from the store,
+watches it, and after each quiet period brings the store forward and
+serves the new generation. `--no-watch` turns the watch off;
+`--debounce-ms` sets the quiet period (default 400).
 
 A `.codegraphignore` is a gitignore file for the graph, at any directory:
 
